@@ -1,0 +1,5 @@
+Write-Host "TurfClub fresh deployment package"
+Write-Host "Install dependencies with: npm install"
+Write-Host "Build frontend with: npm run build"
+Write-Host "Login to Firebase with: firebase login"
+Write-Host "Link project with: firebase use --add"
