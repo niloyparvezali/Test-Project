@@ -4,10 +4,6 @@ import { Moon, Sun } from 'lucide-react';
 export default function DayNightSelector({ shift, setShift }) {
   return (
     <div className="booking-control-card booking-session-card">
-      <div className="booking-control-label">
-        <span>SESSION TYPE</span>
-      </div>
-
       <div className="booking-shift" role="tablist" aria-label="Session type selector">
         <button
           type="button"

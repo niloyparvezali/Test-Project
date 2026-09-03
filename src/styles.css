@@ -10830,12 +10830,31 @@ td small {
 }
 
 .bt-booking-page .booking-control-card {
-    padding: 14px;
+    padding: 0;
+}
+
+.bt-booking-page .booking-date-row {
+    margin-top: 0;
+}
+
+.bt-booking-page .booking-session-card {
+    margin-top: 0;
+}
+
+.bt-booking-page .booking-control-card>p {
+    margin-top: 7px;
+}
+
+.bt-booking-page .booking-results-head {
+    margin-top: 22px;
 }
 
 @media (min-width:800px) {
     .bt-booking-page .booking-main {
         padding-top: 38px;
+    }
+    .bt-booking-page .booking-results-head {
+        margin-top: 28px;
     }
     .bt-booking-page .booking-page-header {
         padding-bottom: 20px;

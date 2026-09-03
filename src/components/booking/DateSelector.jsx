@@ -30,10 +30,6 @@ export default function DateSelector({ date, setDate }) {
 
   return (
     <div className="booking-control-card booking-date-card">
-      <div className="booking-control-label">
-        <span>DATE</span>
-      </div>
-
       <input
         ref={inputRef}
         className="booking-date-native-input"
