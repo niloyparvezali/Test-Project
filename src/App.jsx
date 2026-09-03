@@ -8,8 +8,15 @@ import PublicSite from './pages/public/PublicSite';
 import { pageTitle, BRAND_NAME } from './config/brand';
 
 const ADMIN_TITLES = {
+  home: 'Home',
+  dashboard: 'Home',
   bookings: 'Bookings',
-  finance: 'Finance',
+  slots: 'Slots',
+  'manual-booking': 'Manual Booking',
+  requests: 'Online Booking Requests',
+  activity: 'Recent Activity',
+  history: 'Booking History',
+  finance: 'Payments / Finance',
   expenses: 'Expenses',
   turf: 'Turf Settings',
   pricing: 'Pricing',
