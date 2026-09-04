@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ArrowLeft, CheckCircle2, XCircle, ShieldCheck } from 'lucide-react';
 import { useCollection } from '../../hooks/useFirestore';
 import { bookingStatusExpired } from '../../utils/dateUtils';
-import { confirmBookingClient, expireBookingClient, rejectBookingClient } from '../../services/bookingService';
+import { confirmBookingClient, rejectBookingClient } from '../../services/bookingService';
 import { AdminPageHeader, EmptyState, Modal } from '../../components/ui';
 import BookingRequestCard from './BookingRequestCard';
 
@@ -29,13 +29,18 @@ function RequestReject({ booking, onClose, onConfirm, busy }) {
     <Modal title="Reject booking request" onClose={onClose}>
       <div className="verification-card">
         <div><span>Customer</span><strong>{booking.customerName || '—'}</strong></div>
-        <label className="form-label">Reason (optional)
-          <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Optional rejection reason" />
+        <label className="form-label">Reason
+          <select value={reason} onChange={(e) => setReason(e.target.value)}>
+            <option value="">Select reason</option>
+            <option value="We Didnt get the payment">We Didnt get the payment</option>
+            <option value="Transection not match">Transection not match</option>
+            <option value="slot is already booked">slot is already booked</option>
+          </select>
         </label>
       </div>
       <div className="modal-actions">
         <button className="secondary" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="danger-btn" onClick={() => onConfirm(reason)} disabled={busy}>{busy ? 'Rejecting…' : 'Reject request'} <XCircle /></button>
+        <button className="danger-btn" onClick={() => onConfirm(reason)} disabled={busy || !reason}>{busy ? 'Rejecting…' : 'Reject request'} <XCircle /></button>
       </div>
     </Modal>
   );
@@ -47,10 +52,6 @@ export default function AdminRequests() {
   const [modal, setModal] = useState(null);
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    bookings.filter((b) => b.status === 'pending_payment_verification' && bookingStatusExpired(b)).forEach((b) => expireBookingClient(b).catch(() => {}));
-  }, [bookings]);
 
   async function accept() {
     const booking = modal?.booking;

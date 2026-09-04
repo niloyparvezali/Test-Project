@@ -89,21 +89,7 @@ function bookingSlotDate(b) {
 }
 
 function bookingStatusExpired(b) {
-    const rawExpiry = b?.expiresAt;
-    let exp = 0;
-
-    if (rawExpiry && typeof rawExpiry.toMillis === 'function') {
-        exp = rawExpiry.toMillis();
-    } else if (rawExpiry instanceof Date) {
-        exp = rawExpiry.getTime();
-    } else if (typeof rawExpiry === 'number') {
-        exp = rawExpiry;
-    } else if (typeof rawExpiry === 'string') {
-        const parsed = Date.parse(rawExpiry);
-        exp = Number.isNaN(parsed) ? Number(rawExpiry) || 0 : parsed;
-    }
-
-    return b?.status === 'pending_payment_verification' && exp > 0 && exp <= Date.now();
+    return false;
 }
 
 function bookingDisplayStatus(b) {

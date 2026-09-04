@@ -18,17 +18,34 @@ function activityFromBooking(b) {
 export default function AdminActivity() {
   const bookings = useCollection('bookings');
   const payments = useCollection('payments');
+  const adminActivities = useCollection('adminActivity');
 
   const events = useMemo(() => {
-    const bookingEvents = bookings.map((b) => activityFromBooking(b));
+    const bookingEvents = bookings.map((b) => ({
+      ...activityFromBooking(b),
+      actor: b.confirmedByName || b.rejectedByName || b.cancelledByName || b.createdByName || '',
+      actorEmail: b.confirmedByEmail || b.rejectedByEmail || b.cancelledByEmail || b.createdByEmail || ''
+    }));
     const paymentEvents = payments.map((p) => ({
       type: 'payment',
       time: ts(p.createdAt),
       title: 'Payment verified / recorded',
       meta: `${p.paymentMethod || 'Payment'} · ${p.transactionId || 'No transaction ID'} · ${money(p.amount || 0)}`,
+      actor: '',
+      actorEmail: ''
     }));
-    return [...bookingEvents, ...paymentEvents].filter((x) => x.time).sort((a, b) => b.time - a.time).slice(0, 100);
-  }, [bookings, payments]);
+    const auditEvents = adminActivities.map((a) => ({
+      type: a.action === 'booking_rejected' ? 'rejected' : a.action === 'booking_cancelled' ? 'cancelled' : a.action === 'payment_recorded' ? 'payment' : a.action === 'manual_booking_created' ? 'manual' : a.action === 'booking_confirmed' ? 'accepted' : 'other',
+      time: ts(a.createdAt),
+      title: a.description || a.action || 'Admin activity',
+      meta: a.metadata?.customerName
+        ? `${a.metadata.customerName}${a.metadata.sessionDate ? ` · ${a.metadata.sessionDate}` : ''}${a.metadata.slotStart ? ` · ${timeLabel(a.metadata.slotStart)}–${timeLabel(a.metadata.slotEnd || '')}` : ''}`
+        : '',
+      actor: a.actorName || a.actorEmail || 'Administrator',
+      actorEmail: a.actorEmail || ''
+    }));
+    return [...auditEvents, ...bookingEvents, ...paymentEvents].filter((x) => x.time).sort((a, b) => b.time - a.time).slice(0, 100);
+  }, [bookings, payments, adminActivities]);
 
   const icon = {
     request: UserRound,
@@ -36,6 +53,7 @@ export default function AdminActivity() {
     rejected: XCircle,
     manual: CalendarCheck,
     payment: Wallet,
+    cancelled: XCircle,
   };
 
   return (
@@ -55,7 +73,7 @@ export default function AdminActivity() {
                 <div className="activity-event-v3" key={`${event.type}-${event.time}-${i}`}>
                   <div className={`activity-event-icon ${event.type}`}><Icon /></div>
                   <div className="activity-event-copy">
-                    <b>{event.title}</b>
+                    <b>{event.actor ? `${event.actor} — ${event.title}` : event.title}</b>
                     <span>{event.meta}</span>
                   </div>
                   <time>{new Date(event.time).toLocaleString('en-BD', { dateStyle: 'short', timeStyle: 'short' })}</time>

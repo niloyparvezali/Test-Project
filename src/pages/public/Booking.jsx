@@ -25,7 +25,6 @@ export default function Booking({ go, turf = {}, settings = {}, pricing = {} }) 
   const [locksLoading, setLocksLoading] = useState(true);
   const [locksError, setLocksError] = useState(false);
   const [selected, setSelected] = useState(null);
-  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const today = localDate();
@@ -49,11 +48,6 @@ export default function Booking({ go, turf = {}, settings = {}, pricing = {} }) 
     );
   }, [date]);
 
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(id);
-  }, []);
-
   const slots = useMemo(
     () => generateSlots(date, settings).filter(slot => slot.shift === shift),
     [date, settings, shift]
@@ -67,7 +61,7 @@ export default function Booking({ go, turf = {}, settings = {}, pricing = {} }) 
   const lockMap = useMemo(() => new Map(locks.map(lock => [lock.id, lock])), [locks]);
   const rows = useMemo(
     () => pricedSlots.map(slot => ({ slot, status: getSlotStatus(slot, null, lockMap.get(slot.key)) })),
-    [pricedSlots, lockMap, now]
+    [pricedSlots, lockMap]
   );
 
   const counts = useMemo(

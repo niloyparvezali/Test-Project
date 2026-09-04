@@ -20,6 +20,7 @@ const ADMIN_TITLES = {
   expenses: 'Expenses',
   turf: 'Turf Settings',
   pricing: 'Pricing',
+  'admin-accounts': 'Admin Accounts',
 };
 
 export default function App(){

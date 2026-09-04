@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, ClipboardList, Plus, ShieldCheck, Clock3, CheckCircle2, X, XCircle } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, ClipboardList, ShieldCheck, Clock3, CheckCircle2, X, XCircle } from 'lucide-react';
 import { useCollection } from '../../hooks/useFirestore';
 import { bookingDate, bookingStatusExpired, displayDate, localDate, timeLabel, money } from '../../utils/dateUtils';
-import { confirmBookingClient, expireBookingClient, rejectBookingClient } from '../../services/bookingService';
+import { confirmBookingClient, rejectBookingClient } from '../../services/bookingService';
 import { AdminPageHeader, EmptyState, LoadingState, Modal } from '../../components/ui';
 import BookingRequestCard from './BookingRequestCard';
 
@@ -35,13 +35,18 @@ function RejectModal({ booking, onClose, onConfirm, busy }) {
       <div className="verification-card">
         <div><span>Customer</span><strong>{booking.customerName || '—'}</strong></div>
         <div><span>Slot</span><strong>{displayDate(bookingDate(booking), { day: '2-digit', month: 'short', year: 'numeric' })} · {timeLabel(booking.slotStart)} – {timeLabel(booking.slotEnd)}</strong></div>
-        <label className="form-label">Reason (optional)
-          <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Optional rejection reason" />
+        <label className="form-label">Reason
+          <select value={reason} onChange={(e) => setReason(e.target.value)}>
+            <option value="">Select reason</option>
+            <option value="We Didnt get the payment">We Didnt get the payment</option>
+            <option value="Transection not match">Transection not match</option>
+            <option value="slot is already booked">slot is already booked</option>
+          </select>
         </label>
       </div>
       <div className="modal-actions">
         <button className="secondary" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="danger-btn" onClick={() => onConfirm(reason)} disabled={busy}>
+        <button className="danger-btn" onClick={() => onConfirm(reason)} disabled={busy || !reason}>
           {busy ? 'Rejecting…' : 'Reject request'} <XCircle />
         </button>
       </div>
@@ -65,12 +70,6 @@ function BookingManagement() {
   const [modal, setModal] = useState(null);
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    bookings
-      .filter((b) => b.status === 'pending_payment_verification' && bookingStatusExpired(b))
-      .forEach((b) => expireBookingClient(b).catch(() => {}));
-  }, [bookings]);
 
   const accept = async () => {
     const booking = modal?.booking;
@@ -153,12 +152,6 @@ function BookingManagement() {
       </section>
 
       <section className="management-link-list">
-        <button onClick={() => window.history.pushState({}, '', '/admin/manual-booking') || window.dispatchEvent(new PopStateEvent('popstate'))}>
-          <span className="management-link-icon"><Plus /></span>
-          <span><b>MANUAL BOOKING</b><small>Create a booking for a walk-in, phone customer or offline customer</small></span>
-          <ArrowRight />
-        </button>
-
         <button onClick={() => window.history.pushState({}, '', '/admin/slots') || window.dispatchEvent(new PopStateEvent('popstate'))}>
           <span className="management-link-icon"><CalendarDays /></span>
           <span><b>SLOT AVAILABILITY</b><small>View today’s and upcoming slot status</small></span>

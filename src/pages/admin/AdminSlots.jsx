@@ -95,7 +95,6 @@ export default function AdminSlots() {
           </button>
           <button className="icon-btn" onClick={() => setSelectedDate(dateShift(selectedDate, 1))} aria-label="Next day"><ChevronRight /></button>
           <input id="admin-slot-date-input" className="slot-date-hidden" type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-          <button className="secondary" onClick={() => setSelectedDate(localDate())}><CalendarDays /> Today</button>
         </div>
         <div className="segmented-control" role="group" aria-label="Shift">
           <button className={shift === 'day' ? 'active' : ''} onClick={() => setShift('day')}><Sun /> Day</button>

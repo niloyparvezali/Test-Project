@@ -1,4 +1,4 @@
-import { bookingSlotDate, bookingStatusExpired, TZ } from './dateUtils';
+import { bookingSlotDate, TZ } from './dateUtils';
 
 /**
  * Resolve the single public operational state for a slot.
@@ -8,15 +8,12 @@ import { bookingSlotDate, bookingStatusExpired, TZ } from './dateUtils';
 function getSlotStatus(slot, booking = null, slotLock = null) {
     if (booking?.status === 'confirmed') return 'booked';
 
-    const pendingBooking = booking?.status === 'pending_payment_verification' && !bookingStatusExpired(booking);
+    const pendingBooking = booking?.status === 'pending_payment_verification';
     if (pendingBooking) return 'pending';
 
     if (slotLock?.status === 'booked') return 'booked';
 
-    if (slotLock?.status === 'pending_payment_verification') {
-        const expires = slotLock.expiresAt?.toMillis ? slotLock.expiresAt.toMillis() : 0;
-        if (!expires || expires > Date.now()) return 'pending';
-    }
+    if (slotLock?.status === 'pending_payment_verification') return 'pending';
 
     return 'available';
 }

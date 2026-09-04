@@ -1,11 +1,23 @@
 import React from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Info } from 'lucide-react';
 import { X } from 'lucide-react';
 
 function Loading(){return <div className="loading"><div className="ball">⚽</div><span>Loading Bason Turf City…</span></div>}
 function Empty({title='No data available',text=''}){return <div className="empty"><div className="empty-icon">⚽</div><b>{title}</b>{text&&<span>{text}</span>}</div>}
-function Modal({title,onClose,children}){return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal"><div className="modal-head"><div><h3>{title}</h3></div><button className="icon-btn" onClick={onClose}><X/></button></div>{children}</div></div>}
+function Modal({title,onClose,children}){
+ useEffect(()=>{
+  const previousBody = document.body.style.overflow;
+  const previousHtml = document.documentElement.style.overflow;
+  document.body.style.overflow = 'hidden';
+  document.documentElement.style.overflow = 'hidden';
+  return () => {
+   document.body.style.overflow = previousBody;
+   document.documentElement.style.overflow = previousHtml;
+  };
+ },[]);
+ return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><div className="modal"><div className="modal-head"><div><h3>{title}</h3></div><button className="icon-btn" onClick={onClose}><X/></button></div>{children}</div></div>
+}
 function PendingPill({count=0}){return count?<span className="pending-pill">{count}</span>:null;}
 function AdminPageHeader({eyebrow='OVERVIEW',title,subtitle,actions}){
  return <div className="admin-page-header"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2>{subtitle&&<p>{subtitle}</p>}</div>{actions&&<div className="page-head-actions">{actions}</div>}</div>

@@ -23,8 +23,31 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
-      allow create, update, delete: if isAdmin();
+      allow read: if isAdmin();
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'user';
+      allow update: if isAdmin()
+        && request.resource.data.role == resource.data.role;
+      allow delete: if false;
+    }
+
+    match /adminState/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /adminActivity/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.actorEmail == request.auth.token.email
+        && request.resource.data.action is string
+        && request.resource.data.targetType is string
+        && request.resource.data.targetId is string
+        && request.resource.data.description is string
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if false;
     }
 
     match /settings/{id} {
@@ -191,7 +214,7 @@ service cloud.firestore {
           'slotPrice','totalAmount','paidAmount','advanceAmount','remainingAmount','dueAmount',
           'paymentMethod','receiverNumberSnapshot','sendMoneyNumber','transactionId','paymentAmount',
           'status','slotKey','createdBy','bookingType','bookingSource','adminNote','createdAt','updatedAt',
-          'expiresAt','confirmedAt'
+          'expiresAt','confirmedAt','createdByEmail','createdByName','confirmedBy','confirmedByEmail','confirmedByName'
         ])
         && request.resource.data.customerName is string
         && request.resource.data.customerName.size() >= 2

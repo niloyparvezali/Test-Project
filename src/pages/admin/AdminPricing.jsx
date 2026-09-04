@@ -5,6 +5,7 @@ import { db } from '../../firebase';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { AdminPageHeader, SectionCard, LoadingState } from '../../components/ui';
 import { getActiveDuration, getActivePricing, isValidRate } from '../../utils/pricingUtils';
+import { logAdminActivity } from '../../services/adminActivityService';
 
 function PricingAdmin(){
  const {isAdmin,loading:roleLoading}=useAdminRole();
@@ -82,6 +83,7 @@ function PricingAdmin(){
      await batch.commit();
      setP(x=>({...x,dayRate:Number(active.dayRate),nightRate:Number(active.nightRate),rules:nextRules}));
      setSettings(x=>({...x,slotDuration:duration}));
+     await logAdminActivity({ action:'pricing_updated', targetType:'pricing', targetId:'pricing/current', description:'Changed pricing', metadata:{duration, dayRate:Number(active.dayRate), nightRate:Number(active.nightRate)} });
      alert('Active playing time and pricing saved.');
    }catch(x){
      if(x?.code==='permission-denied') setErr('Your account is not authorized to update Pricing or Turf Settings. Please verify your Firebase users profile has role = admin.');

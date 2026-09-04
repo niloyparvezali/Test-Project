@@ -6,6 +6,7 @@ import { displayBrand } from '../../config/brand';
 import { getActivePricing, isValidRate } from '../../utils/pricingUtils';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { AdminPageHeader,SectionCard,LoadingState } from '../../components/ui';
+import { logAdminActivity } from '../../services/adminActivityService';
 
 function SettingCard({eyebrow,title,description,children}){return <section className="setting-card"><div className="setting-head"><span className="eyebrow">{eyebrow}</span><h3>{title}</h3><p>{description}</p></div><div className="setting-body">{children}</div></section>}
 
@@ -50,6 +51,7 @@ function AdminTurf(){
       updatedAt:serverTimestamp()
     },{merge:true});
     setLoadedDuration(duration);
+    await logAdminActivity({ action:'turf_settings_updated', targetType:'settings', targetId:'turf/main', description:`Updated Turf Settings`, metadata:{ section:'turf', slotDuration:duration } });
     alert('Turf configuration saved.');
   }catch(x){
     if(x?.code==='permission-denied'){

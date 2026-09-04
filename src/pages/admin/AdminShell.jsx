@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { CalendarCheck, Clock3, Ellipsis, LayoutDashboard, LogOut, Menu, ReceiptText, Settings, Wallet, X } from 'lucide-react';
+import { CalendarCheck, Clock3, Ellipsis, LayoutDashboard, LogOut, ReceiptText, Settings, Wallet, X } from 'lucide-react';
 import { auth } from '../../firebase';
 import { signOut } from 'firebase/auth';
 import { useCollection } from '../../hooks/useFirestore';
 import { bookingStatusExpired } from '../../utils/dateUtils';
-import { PendingPill } from '../../components/ui';
+import { PendingPill, Modal } from '../../components/ui';
 import AdminDashboard from './AdminDashboard';
 import AdminBookings from './AdminBookings';
 import AdminSlots from './AdminSlots';
@@ -16,6 +16,7 @@ import AdminFinance from './AdminFinance';
 import AdminExpenses from './AdminExpenses';
 import AdminTurf from './AdminTurf';
 import AdminPricing from './AdminPricing';
+import AdminAccounts from './AdminAccounts';
 import { BRAND_NAME } from '../../config/brand';
 import { useAdminRole } from '../../hooks/useAdminRole';
 
@@ -48,6 +49,7 @@ const TITLES = {
   expenses: 'Expenses',
   turf: 'Turf Settings',
   pricing: 'Pricing',
+  'admin-accounts': 'Admin Accounts',
 };
 
 function getRoutePart() {
@@ -68,7 +70,7 @@ function AdminShell({ user, go }) {
   useEffect(() => {
     const sync = () => {
       const next = getRoutePart();
-      const supported = ['home', 'bookings', 'slots', ...MORE.map(([id]) => id)];
+      const supported = ['home', 'bookings', 'slots', ...MORE.map(([id]) => id), 'admin-accounts'];
       setPage(supported.includes(next) ? next : 'home');
     };
     window.addEventListener('popstate', sync);
@@ -82,6 +84,27 @@ function AdminShell({ user, go }) {
     setMoreOpen(false);
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
+
+  const openMore = () => {
+    setMoreOpen(true);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
+  const closeMore = () => setMoreOpen(false);
+
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeMore();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [moreOpen]);
 
   const initials = String(user?.email || 'A').slice(0, 1).toUpperCase();
   const currentTitle = TITLES[page] || 'Home';
@@ -125,7 +148,7 @@ function AdminShell({ user, go }) {
           ))}
         </nav>
 
-        <button className={`admin-more-trigger ${moreOpen ? 'active' : ''}`} onClick={() => setMoreOpen((v) => !v)}>
+        <button className="admin-more-trigger" onClick={openMore}>
           <Ellipsis /><span>More</span>
         </button>
 
@@ -138,23 +161,74 @@ function AdminShell({ user, go }) {
         </div>
       </aside>
 
-      {moreOpen && <button className="admin-more-scrim" aria-label="Close more menu" onClick={() => setMoreOpen(false)} />}
-
       {moreOpen && (
-        <section className="admin-more-panel-v3">
-          <div className="admin-more-head">
-            <div><span className="eyebrow">MORE CONTROLS</span><h3>Operations & settings</h3></div>
-            <button className="icon-btn" onClick={() => setMoreOpen(false)}><X /></button>
-          </div>
-          <div className="admin-more-grid">
-            {MORE.map(([id, label, Icon]) => (
-              <button key={id} className={page === id ? 'active' : ''} onClick={() => navigate(id)}>
-                <Icon /><span>{label}</span>
-                {id === 'requests' && pendingCount > 0 && <PendingPill count={pendingCount} />}
+        <div className="admin-more-drawer-layer" aria-label="More admin navigation">
+          <button className="admin-more-drawer-overlay" aria-label="Close More navigation" onClick={closeMore} />
+          <aside className="admin-more-drawer" role="dialog" aria-modal="true" aria-label="Admin menu">
+            <div className="admin-more-drawer-head">
+              <div>
+                <b>{BRAND_NAME}</b>
+                <span>Admin Menu</span>
+              </div>
+              <button className="admin-more-drawer-close" type="button" onClick={closeMore} aria-label="Close More navigation">
+                <X />
               </button>
-            ))}
-          </div>
-        </section>
+            </div>
+
+            <div className="admin-more-drawer-scroll">
+              <section className="admin-more-drawer-section">
+                <span className="admin-more-drawer-section-label">OPERATIONS</span>
+                {MORE.slice(0, 4).map(([id, label, Icon]) => (
+                  <button key={id} className="admin-more-drawer-item" type="button" onClick={() => navigate(id)}>
+                    <span className="admin-more-drawer-icon"><Icon /></span>
+                    <span className="admin-more-drawer-label">{label}</span>
+                    {id === 'requests' && pendingCount > 0 && <PendingPill count={pendingCount} />}
+                    <span className="admin-more-drawer-arrow" aria-hidden="true">›</span>
+                  </button>
+                ))}
+              </section>
+
+              <section className="admin-more-drawer-section">
+                <span className="admin-more-drawer-section-label">FINANCE</span>
+                {MORE.slice(4, 6).map(([id, label, Icon]) => (
+                  <button key={id} className="admin-more-drawer-item" type="button" onClick={() => navigate(id)}>
+                    <span className="admin-more-drawer-icon"><Icon /></span>
+                    <span className="admin-more-drawer-label">{label}</span>
+                    <span className="admin-more-drawer-arrow" aria-hidden="true">›</span>
+                  </button>
+                ))}
+              </section>
+
+              <section className="admin-more-drawer-section">
+                <span className="admin-more-drawer-section-label">SETTINGS</span>
+                {MORE.slice(6).map(([id, label, Icon]) => (
+                  <button key={id} className="admin-more-drawer-item" type="button" onClick={() => navigate(id)}>
+                    <span className="admin-more-drawer-icon"><Icon /></span>
+                    <span className="admin-more-drawer-label">{label}</span>
+                    <span className="admin-more-drawer-arrow" aria-hidden="true">›</span>
+                  </button>
+                ))}
+              </section>
+
+              <section className="admin-more-drawer-section admin-more-drawer-account">
+                <span className="admin-more-drawer-section-label">ADMIN / ACCOUNT</span>
+                <div className="admin-more-drawer-user">
+                  <span className="avatar">{initials}</span>
+                  <div><b>{user?.email || 'Administrator'}</b><small>Administrator</small></div>
+                </div>
+                <button className="admin-more-drawer-item" type="button" onClick={() => navigate('admin-accounts')}>
+                  <span className="admin-more-drawer-icon"><Settings /></span>
+                  <span className="admin-more-drawer-label">Manage Admins</span>
+                  <span className="admin-more-drawer-arrow" aria-hidden="true">›</span>
+                </button>
+                <button className="admin-more-drawer-item admin-more-drawer-logout" type="button" onClick={() => { closeMore(); signOut(auth); }}>
+                  <span className="admin-more-drawer-icon"><LogOut /></span>
+                  <span className="admin-more-drawer-label">Logout</span>
+                </button>
+              </section>
+            </div>
+          </aside>
+        </div>
       )}
 
       <main className="admin-main-v3">
@@ -182,6 +256,7 @@ function AdminShell({ user, go }) {
           {page === 'expenses' && <AdminExpenses />}
           {page === 'turf' && <AdminTurf />}
           {page === 'pricing' && <AdminPricing />}
+          {page === 'admin-accounts' && <AdminAccounts user={user} />}
         </div>
       </main>
 
@@ -192,7 +267,7 @@ function AdminShell({ user, go }) {
           <span>Bookings</span>
         </button>
         <button className={page === 'slots' ? 'active' : ''} onClick={() => navigate('slots')}><Clock3 /><span>Slots</span></button>
-        <button className={moreOpen ? 'active' : ''} onClick={() => setMoreOpen((v) => !v)}><Ellipsis /><span>More</span></button>
+        <button onClick={openMore}><Ellipsis /><span>More</span></button>
       </nav>
     </div>
   );

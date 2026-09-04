@@ -28,7 +28,6 @@ function operatingHoursLabel(settings = {}) {
 export default function Home({ go, turf = {}, settings = {} }) {
   const [locks, setLocks] = useState([]);
   const [availabilityReady, setAvailabilityReady] = useState(false);
-  const [now, setNow] = useState(Date.now());
   const today = localDate();
 
   useEffect(
@@ -47,17 +46,12 @@ export default function Home({ go, turf = {}, settings = {} }) {
     [today]
   );
 
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(id);
-  }, []);
-
   const availability = useMemo(() => {
     if (!availabilityReady) return null;
     const slots = generateSlots(today, settings);
     const byKey = new Map(locks.map(lock => [lock.id, lock]));
     return slots.filter(slot => getSlotStatus(slot, null, byKey.get(slot.key)) === 'available').length;
-  }, [locks, settings, today, now, availabilityReady]);
+  }, [locks, settings, today, availabilityReady]);
 
   const hours = operatingHoursLabel(settings);
 

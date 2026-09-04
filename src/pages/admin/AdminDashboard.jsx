@@ -47,7 +47,7 @@ export default function AdminDashboard({ go }) {
         eyebrow="ADMIN HOME"
         title="Bason Turf City"
         subtitle="A booking-first command center for today’s operations."
-        actions={<button className="primary" onClick={() => go('bookings')}><CalendarCheck /> Open bookings</button>}
+        actions={<button className="primary" onClick={() => go('slots')}><CalendarCheck /> Open bookings</button>}
       />
 
       <section className="home-alert-card">
