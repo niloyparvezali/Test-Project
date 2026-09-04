@@ -8,7 +8,7 @@ export default function AboutSection({ turf = {} }) {
 
   const description =
     String(turf.description || '').trim() ||
-    'Konabari Turf provides dedicated playing space for friendly matches, team sessions, and competitive football. The focus is a well-organized venue where players can meet, play, and make the most of their booked session.';
+    'TestWeb Turf provides dedicated playing space for friendly matches, team sessions, and competitive football. The focus is a well-organized venue where players can meet, play, and make the most of their booked session.';
 
   return (
     <section id="about" className="bt-section bt-about-section">

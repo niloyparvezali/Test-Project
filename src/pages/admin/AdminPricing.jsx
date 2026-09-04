@@ -8,7 +8,8 @@ import { getActiveDuration, getActivePricing, isValidRate } from '../../utils/pr
 import { logAdminActivity } from '../../services/adminActivityService';
 
 function PricingAdmin(){
- const {isAdmin,loading:roleLoading}=useAdminRole();
+ const {isAdmin,loading:roleLoading,can}=useAdminRole();
+ const canManage=can('managePricing');
  const [p,setP]=useState({rules:{'60':{day:'',night:''},'90':{day:'',night:''}},timeRanges:[]});
  const [settings,setSettings]=useState({});
  const [loaded,setLoaded]=useState(false);
@@ -52,7 +53,7 @@ function PricingAdmin(){
 
  const save=async()=>{
    setErr('');
-   if(!isAdmin){
+   if(!canManage){
      setErr('Your account is not registered as an Admin.');
      return;
    }
@@ -86,14 +87,14 @@ function PricingAdmin(){
      await logAdminActivity({ action:'pricing_updated', targetType:'pricing', targetId:'pricing/current', description:'Changed pricing', metadata:{duration, dayRate:Number(active.dayRate), nightRate:Number(active.nightRate)} });
      alert('Active playing time and pricing saved.');
    }catch(x){
-     if(x?.code==='permission-denied') setErr('Your account is not authorized to update Pricing or Turf Settings. Please verify your Firebase users profile has role = admin.');
+     if(x?.code==='permission-denied') setErr('Your account is not authorized to update Pricing. Please verify your Admin access level and permissions.');
      else setErr(x?.message||'Could not save pricing.');
    }finally{setSaving(false);}
  };
 
  if(roleLoading||!loaded)return <LoadingState/>;
  return <>
-  <AdminPageHeader eyebrow="SYSTEM" title="Slot pricing" subtitle="One active playing time controls public slots, admin slots, and booking calculations." actions={<button className="primary" onClick={save} disabled={saving}><Save/> {saving?'Saving…':'Save pricing'}</button>}/>
+  <AdminPageHeader eyebrow="SYSTEM" title="Slot pricing" subtitle="One active playing time controls public slots, admin slots, and booking calculations." actions={<button className="primary" onClick={save} disabled={saving || !canManage}><Save/> {saving?'Saving…':'Save pricing'}</button>}/>
   <SectionCard eyebrow="ACTIVE PLAYING TIME" title={`${duration}-minute session`} subtitle="Choose exactly one duration. The same slotDuration powers the public and admin booking systems.">
    <div className="duration-choice-grid">
     {[60,90].map(d=><button type="button" key={d} className={`duration-choice ${duration===d?'active':''}`} onClick={()=>chooseDuration(d)}><span>{d} MINUTES</span><strong>{d===60?'Standard session':'Extended session'}</strong>{duration===d&&<Check/>}</button>)}

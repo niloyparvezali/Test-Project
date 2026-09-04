@@ -130,7 +130,7 @@ export default function PaymentDetailsStep({
       ) : (
         <div className="booking-payment-unavailable">
           <strong>ONLINE PAYMENT IS CURRENTLY UNAVAILABLE</strong>
-          <span>Please contact Konabari Turf for booking assistance.</span>
+          <span>Please contact TestWeb Turf for booking assistance.</span>
         </div>
       )}
 

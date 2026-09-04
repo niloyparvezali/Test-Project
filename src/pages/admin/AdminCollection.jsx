@@ -4,6 +4,8 @@ import { useCollection } from '../../hooks/useFirestore';
 import { bookingDate, dateShift, localDate, money, timeLabel, TZ } from '../../utils/dateUtils';
 import { zonedSlotStartMs } from '../../utils/slotStatus';
 import { recordPaymentClient } from '../../services/bookingService';
+import { useAdminRole } from '../../hooks/useAdminRole';
+import { ADMIN_PERMISSIONS } from '../../config/adminPermissions';
 
 function moneyValue(value) {
   return Number(value ?? 0) || 0;
@@ -37,6 +39,8 @@ function formatOperationalLabel(date) {
 
 export default function AdminCollection() {
   const bookings = useCollection('bookings');
+  const { can } = useAdminRole();
+  const canRecordPayment = can(ADMIN_PERMISSIONS.RECORD_PAYMENT);
   const [view, setView] = useState('today');
   const [selected, setSelected] = useState(null);
   const [amount, setAmount] = useState('');
@@ -104,6 +108,7 @@ export default function AdminCollection() {
   };
 
   const recordPayment = async () => {
+    if (!canRecordPayment) { setError('You do not have permission to record payments.'); return; }
     if (!selected?.booking || busy) return;
     const liveAmounts = getBookingAmounts(selected.booking);
     const value = Math.round(Number(amount || 0) * 1000) / 1000;
@@ -117,7 +122,6 @@ export default function AdminCollection() {
         bookingId: selected.booking.id,
         amount: value,
         paymentMethod: method,
-        paymentDate: new Date().toISOString().slice(0, 10),
         note: note.trim() || `${method} payment recorded from Collection`
       });
       setSuccess('Payment recorded successfully.');
@@ -214,7 +218,7 @@ export default function AdminCollection() {
             <div className="collection-queue-row" key={b.id}>
               <div className="collection-queue-customer"><b>{b.customerName || 'Customer'}</b>{isArchive && <small>{archiveDate} · {timeLabel(b.slotStart)} – {timeLabel(b.slotEnd)}</small>}{!isArchive && <small>{timeLabel(b.slotStart)} – {timeLabel(b.slotEnd)}</small>}</div>
               <div className="collection-queue-due"><span>Due</span><strong>{money(entry.due)}</strong></div>
-              <button className="primary small collection-collect-button" type="button" onClick={() => openPayment(entry, isArchive ? 'archive' : 'today')}>Collect</button>
+              {canRecordPayment && <button className="primary small collection-collect-button" type="button" onClick={() => openPayment(entry, isArchive ? 'archive' : 'today')}>Collect</button>}
             </div>
           );
         }) : <div className="collection-empty">{isArchive ? 'No unpaid or due bookings.' : 'No due bookings in today’s operational day.'}</div>}

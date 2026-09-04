@@ -85,7 +85,7 @@ export default function GallerySection({ gallery = [] }) {
               >
                 <img
                   src={item.url}
-                  alt={item.alt || 'Konabari Turf venue'}
+                  alt={item.alt || 'TestWeb Turf venue'}
                   loading={index === 0 ? 'eager' : 'lazy'}
                   onError={e => {
                     e.currentTarget.style.display = 'none';
@@ -106,7 +106,7 @@ export default function GallerySection({ gallery = [] }) {
           className="bt-gallery-viewer"
           role="dialog"
           aria-modal="true"
-          aria-label="Konabari Turf gallery"
+          aria-label="TestWeb Turf gallery"
           onMouseDown={e => e.target === e.currentTarget && setViewerOpen(false)}
         >
           <div className="bt-gallery-viewer-shell">
@@ -166,7 +166,7 @@ export default function GallerySection({ gallery = [] }) {
                 key={selected.id}
                 className="bt-gallery-viewer-image"
                 src={selected.url}
-                alt={selected.alt || 'Konabari Turf venue'}
+                alt={selected.alt || 'TestWeb Turf venue'}
                 loading="eager"
                 onError={e => {
                   e.currentTarget.style.display = 'none';

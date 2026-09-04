@@ -2,49 +2,64 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
+
     function isAdmin() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    }
-    function validDate(v) { return v is string && v.matches('^\\d{4}-\\d{2}-\\d{2}$'); }
-    function validPendingStatus(v) { return v == 'pending_payment_verification'; }
-    function activeDuration() {
-      return get(/databases/$(database)/documents/settings/config).data.slotDuration;
-    }
-    function activePricing() {
-      return get(/databases/$(database)/documents/pricing/current).data;
-    }
-    function activeRate(shift) {
-      return shift == 'day' ? activePricing().dayRate : activePricing().nightRate;
-    }
-    function validActiveDuration(v) {
-      return v == 60 || v == 90;
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && (!('accessLevel' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accessLevel in ['full','custom']);
     }
 
+    function isFullAdmin() {
+      return isAdmin()
+        && (!('accessLevel' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accessLevel == 'full');
+    }
+
+    function hasPermission(permission) {
+      return isAdmin() && (
+        isFullAdmin()
+        || (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accessLevel == 'custom'
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.permissions[permission] == true
+        )
+      );
+    }
+
+    function validDate(v) { return v is string && v.matches('^\\d{4}-\\d{2}-\\d{2}$'); }
+    function activeDuration() { return get(/databases/$(database)/documents/settings/config).data.slotDuration; }
+    function activePricing() { return get(/databases/$(database)/documents/pricing/current).data; }
+    function activeRate(shift) { return shift == 'day' ? activePricing().dayRate : activePricing().nightRate; }
+    function validActiveDuration(v) { return v == 60 || v == 90; }
+    function authEmail() { return request.auth.token.email == null ? '' : request.auth.token.email; }
+
     match /users/{uid} {
-      allow read: if isAdmin();
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow read: if isFullAdmin();
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.role == 'user';
-      allow update: if isAdmin()
-        && request.resource.data.role == resource.data.role;
+      allow update: if signedIn() && request.auth.uid == uid
+        && resource.data.role == 'user' && request.resource.data.role == 'user';
       allow delete: if false;
     }
 
     match /adminState/{id} {
-      allow read: if isAdmin();
+      allow read: if isFullAdmin();
       allow write: if false;
     }
 
     match /adminActivity/{id} {
-      allow read: if isAdmin();
+      allow read: if hasPermission('viewActivity');
       allow create: if isAdmin()
         && request.resource.data.actorUid == request.auth.uid
-        && request.resource.data.actorEmail == request.auth.token.email
+        && request.resource.data.actorEmail == authEmail()
         && request.resource.data.action is string
         && request.resource.data.targetType is string
         && request.resource.data.targetId is string
+        && request.resource.data.targetType != 'admin'
+        && !request.resource.data.action.matches('^admin_.*')
         && request.resource.data.description is string
         && request.resource.data.createdAt is timestamp;
       allow update, delete: if false;
@@ -52,32 +67,32 @@ service cloud.firestore {
 
     match /settings/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if hasPermission('manageTurfSettings');
     }
 
     match /turf/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if hasPermission('manageTurfSettings');
     }
 
     match /pricing/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if hasPermission('managePricing');
     }
 
-    // Gallery is no longer used by the application; leave existing data/rule untouched.
     match /gallery/{id} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if hasPermission('manageTurfSettings');
     }
 
     match /slotLocks/{id} {
-      allow read: if true;
+      allow read: if hasPermission('viewSlots') || hasPermission('manualBooking')
+        || hasPermission('acceptBooking') || hasPermission('rejectBooking')
+        || hasPermission('cancelBooking') || hasPermission('viewHome');
 
-      // Public booking path: anonymous visitors and authenticated non-admin customers.
-      // Admins must use the protected Admin booking path.
       allow create: if request.resource.data.keys().hasOnly([
-          'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate','slotStartDateTime','slotEndDateTime','duration','shift','expiresAt'
+          'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
+          'slotStartDateTime','slotEndDateTime','duration','shift','expiresAt'
         ])
         && request.resource.data.slotKey == id
         && validDate(request.resource.data.sessionDate)
@@ -87,12 +102,12 @@ service cloud.firestore {
         && request.resource.data.duration == activeDuration()
         && request.resource.data.shift in ['day','night']
         && request.resource.data.status == 'pending_payment_verification'
-        && request.resource.data.expiresAt is timestamp
-        && request.resource.data.expiresAt > request.time;
+        && request.resource.data.expiresAt == null;
 
-      allow create: if isAdmin()
+      allow create: if hasPermission('manualBooking')
         && request.resource.data.keys().hasOnly([
-          'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate','slotStartDateTime','slotEndDateTime','duration','shift','expiresAt','updatedAt'
+          'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
+          'slotStartDateTime','slotEndDateTime','duration','shift','expiresAt','updatedAt'
         ])
         && request.resource.data.slotKey == id
         && validDate(request.resource.data.sessionDate)
@@ -105,170 +120,237 @@ service cloud.firestore {
         && request.resource.data.expiresAt == null
         && request.resource.data.updatedAt is timestamp;
 
-      allow update: if resource.data.status == 'pending_payment_verification'
-        && resource.data.expiresAt is timestamp
-        && resource.data.expiresAt <= request.time
-        && request.resource.data.keys().hasOnly([
-          'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate','slotStartDateTime','slotEndDateTime','duration','shift','expiresAt'
-        ])
-        && request.resource.data.slotKey == id
-        && request.resource.data.sessionDate == resource.data.sessionDate
-        && request.resource.data.slotStart == resource.data.slotStart
-        && request.resource.data.slotEnd == resource.data.slotEnd
-        && request.resource.data.duration == resource.data.duration
-        && request.resource.data.shift == resource.data.shift
-        && request.resource.data.status == 'pending_payment_verification'
-        && request.resource.data.expiresAt is timestamp
-        && request.resource.data.expiresAt > request.time;
+      allow update: if hasPermission('manualBooking') || hasPermission('acceptBooking')
+        || hasPermission('rejectBooking') || hasPermission('cancelBooking');
 
-      allow update, delete: if isAdmin();
+      allow delete: if (hasPermission('rejectBooking')
+          && resource.data.status == 'pending_payment_verification')
+        || (hasPermission('cancelBooking') && resource.data.status == 'booked');
     }
 
     match /bookings/{id} {
-      allow read: if isAdmin();
+      allow read: if hasPermission('viewHome') || hasPermission('viewBookings') || hasPermission('viewCollection')
+        || hasPermission('viewHistory') || hasPermission('viewActivity') || hasPermission('manualBooking')
+        || hasPermission('acceptBooking') || hasPermission('rejectBooking') || hasPermission('cancelBooking');
 
-      // Public payment booking request. Anonymous visitors and non-admin customers may
-      // create strictly validated requests; booking reads remain admin-only.
       allow create: if request.resource.data.keys().hasOnly([
-          'customerName','phone','date','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate','slotStartDateTime','slotEndDateTime','duration','shift',
-          'slotPrice','totalAmount','paidAmount','advanceAmount','remainingAmount','dueAmount',
-          'paymentMethod','receiverNumberSnapshot','sendMoneyNumber','transactionId','paymentAmount',
-          'status','slotKey','createdBy','bookingType','createdAt','updatedAt','expiresAt','verificationStatus'
+          'customerName','phone','date','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
+          'slotStartDateTime','slotEndDateTime','duration','shift','slotPrice','totalAmount','paidAmount',
+          'advanceAmount','remainingAmount','dueAmount','paymentMethod','receiverNumberSnapshot',
+          'sendMoneyNumber','transactionId','paymentAmount','status','slotKey','createdBy','bookingType',
+          'createdAt','updatedAt','expiresAt','verificationStatus'
         ])
-        && request.resource.data.customerName is string
-        && request.resource.data.customerName.size() >= 2
-        && request.resource.data.phone is string
-        && request.resource.data.phone.size() >= 5
-        && validDate(request.resource.data.date)
-        && request.resource.data.date == request.resource.data.sessionDate
+        && request.resource.data.customerName is string && request.resource.data.customerName.size() >= 2
+        && request.resource.data.phone is string && request.resource.data.phone.size() >= 5
+        && validDate(request.resource.data.date) && request.resource.data.date == request.resource.data.sessionDate
         && validDate(request.resource.data.sessionDate)
-        && request.resource.data.slotStart is string
-        && request.resource.data.slotEnd is string
-        && validActiveDuration(request.resource.data.duration)
-        && request.resource.data.duration == activeDuration()
+        && request.resource.data.slotStart is string && request.resource.data.slotEnd is string
+        && validActiveDuration(request.resource.data.duration) && request.resource.data.duration == activeDuration()
         && request.resource.data.shift in ['day','night']
         && request.resource.data.status == 'pending_payment_verification'
         && request.resource.data.paymentMethod in ['bKash','Nagad','Rocket']
-        && request.resource.data.receiverNumberSnapshot is string
-        && request.resource.data.receiverNumberSnapshot.size() >= 5
+        && request.resource.data.receiverNumberSnapshot is string && request.resource.data.receiverNumberSnapshot.size() >= 5
         && (
-          (request.resource.data.paymentMethod == 'bKash'
-            && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.bkashNumber)
-          ||
-          (request.resource.data.paymentMethod == 'Nagad'
-            && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.nagadNumber)
-          ||
-          (request.resource.data.paymentMethod == 'Rocket'
-            && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.rocketNumber)
+          (request.resource.data.paymentMethod == 'bKash' && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.bkashNumber)
+          || (request.resource.data.paymentMethod == 'Nagad' && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.nagadNumber)
+          || (request.resource.data.paymentMethod == 'Rocket' && request.resource.data.receiverNumberSnapshot == get(/databases/$(database)/documents/turf/main).data.rocketNumber)
         )
-        && request.resource.data.sendMoneyNumber is string
-        && request.resource.data.sendMoneyNumber.size() >= 5
-        && request.resource.data.transactionId is string
-        && request.resource.data.transactionId.size() >= 5
-        && request.resource.data.paymentAmount is number
-        && request.resource.data.paymentAmount > 0
-        && request.resource.data.paymentAmount <= request.resource.data.totalAmount
+        && request.resource.data.sendMoneyNumber is string && request.resource.data.sendMoneyNumber.size() >= 5
+        && request.resource.data.transactionId is string && request.resource.data.transactionId.size() >= 5
+        && request.resource.data.paymentAmount is number && request.resource.data.paymentAmount > 0
         && request.resource.data.slotKey is string
-        && request.resource.data.totalAmount is number
-        && request.resource.data.slotPrice is number
+        && request.resource.data.totalAmount is number && request.resource.data.slotPrice is number
         && request.resource.data.totalAmount == request.resource.data.slotPrice
         && request.resource.data.paidAmount == 0
         && request.resource.data.advanceAmount is number
-        && request.resource.data.advanceAmount > 0
-        && request.resource.data.advanceAmount <= request.resource.data.totalAmount
+        && request.resource.data.advanceAmount > 0 && request.resource.data.advanceAmount <= request.resource.data.totalAmount
         && request.resource.data.remainingAmount == request.resource.data.totalAmount - request.resource.data.paymentAmount
         && request.resource.data.dueAmount == request.resource.data.totalAmount - request.resource.data.paymentAmount
         && request.resource.data.createdBy == 'public'
         && request.resource.data.bookingType == 'public_payment_request'
         && request.resource.data.verificationStatus == 'pending'
         && request.resource.data.paymentAmount >= request.resource.data.advanceAmount
-        && request.resource.data.expiresAt is timestamp
-        && request.resource.data.expiresAt > request.time
+        && request.resource.data.expiresAt == null
         && (
-          (
-            get(/databases/$(database)/documents/settings/config).data.advanceType == 'fixed'
+          (get(/databases/$(database)/documents/settings/config).data.advanceType == 'fixed'
             && request.resource.data.advanceAmount == get(/databases/$(database)/documents/settings/config).data.advanceValue
-            && request.resource.data.advanceAmount <= request.resource.data.totalAmount
-          )
-          ||
-          (
-            get(/databases/$(database)/documents/settings/config).data.advanceType == 'percentage'
-            && request.resource.data.advanceAmount == (
-              (request.resource.data.totalAmount * get(/databases/$(database)/documents/settings/config).data.advanceValue) / 100
-            )
-          )
-          ||
-          (
-            !('advanceType' in get(/databases/$(database)/documents/settings/config).data)
-            && request.resource.data.advanceAmount == ((request.resource.data.totalAmount * 30) / 100)
-          )
+            && request.resource.data.advanceAmount <= request.resource.data.totalAmount)
+          || (get(/databases/$(database)/documents/settings/config).data.advanceType == 'percentage'
+            && request.resource.data.advanceAmount == ((request.resource.data.totalAmount * get(/databases/$(database)/documents/settings/config).data.advanceValue) / 100))
+          || (!('advanceType' in get(/databases/$(database)/documents/settings/config).data)
+            && request.resource.data.advanceAmount == ((request.resource.data.totalAmount * 30) / 100))
         )
         && request.resource.data.totalAmount == activeRate(request.resource.data.shift)
         && getAfter(/databases/$(database)/documents/slotLocks/$(request.resource.data.slotKey)).data.slotKey == request.resource.data.slotKey
         && getAfter(/databases/$(database)/documents/slotLocks/$(request.resource.data.slotKey)).data.status == 'pending_payment_verification';
 
-      // Admin direct booking.
-      allow create: if isAdmin()
+      allow create: if hasPermission('manualBooking')
         && request.resource.data.keys().hasOnly([
-          'customerName','phone','date','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate','slotStartDateTime','slotEndDateTime','duration','shift',
-          'slotPrice','totalAmount','paidAmount','advanceAmount','remainingAmount','dueAmount',
-          'paymentMethod','receiverNumberSnapshot','sendMoneyNumber','transactionId','paymentAmount',
-          'status','slotKey','createdBy','bookingType','bookingSource','adminNote','createdAt','updatedAt',
-          'expiresAt','confirmedAt','createdByEmail','createdByName','confirmedBy','confirmedByEmail','confirmedByName'
+          'customerName','phone','date','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
+          'slotStartDateTime','slotEndDateTime','duration','shift','slotPrice','totalAmount','paidAmount',
+          'advanceAmount','remainingAmount','dueAmount','paymentMethod','receiverNumberSnapshot',
+          'sendMoneyNumber','transactionId','paymentAmount','status','slotKey','createdBy','bookingType',
+          'bookingSource','adminNote','createdAt','updatedAt','expiresAt','confirmedAt','createdByEmail',
+          'createdByName','confirmedBy','confirmedByEmail','confirmedByName'
         ])
-        && request.resource.data.customerName is string
-        && request.resource.data.customerName.size() >= 2
+        && request.resource.data.customerName is string && request.resource.data.customerName.size() >= 2
         && request.resource.data.phone is string
-        && validDate(request.resource.data.sessionDate)
-        && request.resource.data.date == request.resource.data.sessionDate
-        && request.resource.data.slotStart is string
-        && request.resource.data.slotEnd is string
-        && validActiveDuration(request.resource.data.duration)
-        && request.resource.data.duration == activeDuration()
+        && validDate(request.resource.data.sessionDate) && request.resource.data.date == request.resource.data.sessionDate
+        && request.resource.data.slotStart is string && request.resource.data.slotEnd is string
+        && validActiveDuration(request.resource.data.duration) && request.resource.data.duration == activeDuration()
         && request.resource.data.shift in ['day','night']
         && request.resource.data.slotKey is string
         && request.resource.data.status == 'confirmed'
-        && request.resource.data.bookingType == 'manual_admin'
-        && request.resource.data.bookingSource == 'admin'
+        && request.resource.data.bookingType == 'manual_admin' && request.resource.data.bookingSource == 'admin'
         && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.adminNote is string
-        && request.resource.data.adminNote.size() >= 2
+        && request.resource.data.createdByEmail == authEmail()
+        && request.resource.data.confirmedBy == request.auth.uid
+        && request.resource.data.confirmedByEmail == authEmail()
+        && request.resource.data.adminNote is string && request.resource.data.adminNote.size() >= 2
         && request.resource.data.paymentMethod == 'Manual'
-        && request.resource.data.receiverNumberSnapshot == ''
-        && request.resource.data.sendMoneyNumber == ''
+        && request.resource.data.receiverNumberSnapshot == '' && request.resource.data.sendMoneyNumber == ''
         && request.resource.data.transactionId == ''
-        && request.resource.data.paymentAmount == 0
-        && request.resource.data.paidAmount == 0
-        && request.resource.data.totalAmount is number
-        && request.resource.data.slotPrice is number
+        && request.resource.data.totalAmount is number && request.resource.data.slotPrice is number
         && request.resource.data.totalAmount == request.resource.data.slotPrice
         && request.resource.data.advanceAmount is number
-        && request.resource.data.advanceAmount >= 0
-        && request.resource.data.advanceAmount <= request.resource.data.totalAmount
-        && request.resource.data.remainingAmount == request.resource.data.totalAmount
-        && request.resource.data.dueAmount == request.resource.data.totalAmount
-        && request.resource.data.createdAt is timestamp
-        && request.resource.data.updatedAt is timestamp
-        && request.resource.data.confirmedAt is timestamp
-        && request.resource.data.expiresAt == null
+        && request.resource.data.advanceAmount >= 0 && request.resource.data.advanceAmount <= request.resource.data.totalAmount
+        && request.resource.data.paidAmount == request.resource.data.advanceAmount
+        && request.resource.data.paymentAmount == request.resource.data.advanceAmount
+        && request.resource.data.remainingAmount == request.resource.data.totalAmount - request.resource.data.advanceAmount
+        && request.resource.data.dueAmount == request.resource.data.totalAmount - request.resource.data.advanceAmount
+        && request.resource.data.createdAt is timestamp && request.resource.data.updatedAt is timestamp
+        && request.resource.data.confirmedAt is timestamp && request.resource.data.expiresAt == null
         && request.resource.data.totalAmount == activeRate(request.resource.data.shift)
         && getAfter(/databases/$(database)/documents/slotLocks/$(request.resource.data.slotKey)).data.slotKey == request.resource.data.slotKey
         && getAfter(/databases/$(database)/documents/slotLocks/$(request.resource.data.slotKey)).data.status == 'booked';
 
-      allow update, delete: if isAdmin();
+      allow update: if hasPermission('acceptBooking')
+        && resource.data.status == 'pending_payment_verification'
+        && request.resource.data.status == 'confirmed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','paidAmount','remainingAmount','dueAmount','updatedAt','reviewedAt',
+          'verificationStatus','confirmedAt','expiresAt','confirmedBy','confirmedByEmail','confirmedByName'
+        ])
+        && request.resource.data.confirmedBy == request.auth.uid
+        && request.resource.data.confirmedByEmail == authEmail()
+        && request.resource.data.confirmedAt is timestamp
+        && request.resource.data.verificationStatus == 'accepted'
+        && request.resource.data.paidAmount is number
+        && request.resource.data.paidAmount > 0
+        && request.resource.data.paidAmount <= request.resource.data.totalAmount
+        && request.resource.data.remainingAmount == request.resource.data.totalAmount - request.resource.data.paidAmount
+        && request.resource.data.dueAmount == request.resource.data.totalAmount - request.resource.data.paidAmount
+        && request.resource.data.expiresAt == null
+        && getAfter(/databases/$(database)/documents/slotLocks/$(id)).data.status == 'booked';
+
+      allow update: if hasPermission('rejectBooking')
+        && resource.data.status == 'pending_payment_verification'
+        && request.resource.data.status == 'rejected'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','verificationStatus','rejectionReason','reviewedAt','updatedAt','rejectedBy','rejectedByEmail','rejectedByName'
+        ])
+        && request.resource.data.rejectedBy == request.auth.uid
+        && request.resource.data.rejectedByEmail == authEmail()
+        && request.resource.data.verificationStatus == 'rejected'
+        && request.resource.data.rejectionReason is string
+        && request.resource.data.rejectionReason.size() > 0;
+
+      allow update: if hasPermission('cancelBooking')
+        && resource.data.status == 'confirmed'
+        && request.resource.data.status == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','updatedAt','cancelledAt','cancelledBy','cancelledByEmail','cancelledByName'
+        ])
+        && request.resource.data.cancelledBy == request.auth.uid
+        && request.resource.data.cancelledByEmail == authEmail()
+        && request.resource.data.cancelledAt is timestamp;
+
+      allow update: if hasPermission('recordPayment')
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paidAmount','advanceAmount','remainingAmount','dueAmount','updatedAt','updatedBy','updatedByEmail'
+        ])
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedByEmail == authEmail()
+        && request.resource.data.paidAmount is number
+        && request.resource.data.paidAmount >= resource.data.paidAmount
+        && request.resource.data.paidAmount <= resource.data.totalAmount
+        && request.resource.data.dueAmount is number
+        && request.resource.data.dueAmount >= 0
+        && request.resource.data.remainingAmount == request.resource.data.dueAmount
+        && request.resource.data.paidAmount + request.resource.data.dueAmount == request.resource.data.totalAmount;
+
+      allow delete: if false;
     }
 
     match /payments/{id} {
-      allow read, update, delete: if isAdmin();
-      allow create: if isAdmin();
+      allow read: if hasPermission('viewHome') || hasPermission('viewFinance') || hasPermission('viewTransactions')
+        || hasPermission('viewHistory') || hasPermission('viewActivity');
+
+      allow create: if hasPermission('acceptBooking')
+        && request.resource.data.bookingId is string
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.transactionId is string && request.resource.data.transactionId.size() >= 5
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.status == 'confirmed'
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paidAmount == request.resource.data.amount
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paymentAmount == request.resource.data.amount;
+
+      allow create: if hasPermission('recordPayment')
+        && request.resource.data.bookingId is string
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp
+        && get(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.status == getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.status
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paidAmount
+          == get(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paidAmount + request.resource.data.amount;
+
+      allow create: if hasPermission('manualBooking')
+        && request.resource.data.bookingId is string
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.bookingType == 'manual_admin'
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paidAmount == request.resource.data.amount
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.paymentAmount == request.resource.data.amount;
+
+      allow update, delete: if isFullAdmin();
     }
 
     match /transactions/{id} {
-      allow read, update, delete: if isAdmin();
-      allow create: if isAdmin();
+      allow read: if hasPermission('viewHome') || hasPermission('viewFinance') || hasPermission('viewTransactions')
+        || hasPermission('viewHistory') || hasPermission('viewActivity');
+
+      allow create: if (hasPermission('acceptBooking') || hasPermission('recordPayment') || hasPermission('manualBooking'))
+        && request.resource.data.type == 'income'
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.referenceId is string
+        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.referenceId)).data.paidAmount >= request.resource.data.amount;
+
+      allow create: if hasPermission('manageExpenses')
+        && request.resource.data.type == 'expense'
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.referenceId is string
+        && getAfter(/databases/$(database)/documents/expenses/$(request.resource.data.referenceId)).data.amount == request.resource.data.amount;
+
+      allow update, delete: if hasPermission('manageExpenses') || isFullAdmin();
     }
 
-    match /expenses/{id} { allow read, write: if isAdmin(); }
+
+    match /expenses/{id} {
+      allow read: if hasPermission('viewHome') || hasPermission('viewFinance') || hasPermission('manageExpenses');
+      allow create: if hasPermission('manageExpenses')
+        && request.resource.data.reason is string && request.resource.data.reason.size() >= 2
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.createdAt is timestamp && request.resource.data.updatedAt is timestamp
+        && request.resource.data.date is string
+        && request.resource.data.category is string;
+      allow update: if hasPermission('manageExpenses')
+        && request.resource.data.reason is string && request.resource.data.reason.size() >= 2
+        && request.resource.data.amount is number && request.resource.data.amount > 0
+        && request.resource.data.updatedAt is timestamp;
+      allow delete: if hasPermission('manageExpenses');
+    }
 
     match /{document=**} { allow read, write: if false; }
   }

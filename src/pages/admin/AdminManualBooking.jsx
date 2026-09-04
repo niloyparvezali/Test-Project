@@ -2,10 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Moon, Plus, Sun } from 'lucide-react';
 import { useCollection, useDoc } from '../../hooks/useFirestore';
 import { createManualBookingClient } from '../../services/bookingService';
-import { bookingDate, bookingStatusExpired, dateShift, displayDate, localDate, money, timeLabel } from '../../utils/dateUtils';
+import { bookingDate, dateShift, displayDate, localDate, money, timeLabel } from '../../utils/dateUtils';
 import { generateSlots, slotPriceFromPricing } from '../../utils/slotUtils';
 import { getSlotStatus } from '../../utils/slotStatus';
 import { AdminPageHeader, EmptyState, LoadingState } from '../../components/ui';
+import { useAdminRole } from '../../hooks/useAdminRole';
+import { ADMIN_PERMISSIONS } from '../../config/adminPermissions';
 
 export default function AdminManualBooking() {
   const params = new URLSearchParams(window.location.search);
@@ -13,6 +15,8 @@ export default function AdminManualBooking() {
   const initialSlotKey = params.get('slot') || '';
 
   const bookings = useCollection('bookings');
+  const { can } = useAdminRole();
+  const canManualBooking = can(ADMIN_PERMISSIONS.MANUAL_BOOKING);
   const [settings, settingsLoading] = useDoc('settings/config');
   const [pricing, pricingLoading] = useDoc('pricing/current');
   const today = localDate();
@@ -45,7 +49,7 @@ export default function AdminManualBooking() {
     const map = new Map();
     bookings.forEach((b) => {
       if (bookingDate(b) !== selectedDate || !b.slotKey) return;
-      const active = b.status === 'confirmed' || (b.status === 'pending_payment_verification' && !bookingStatusExpired(b));
+      const active = b.status === 'confirmed' || (b.status === 'pending_payment_verification');
       if (!active) return;
       const previous = map.get(b.slotKey);
       if (!previous || (b.status === 'confirmed' && previous.status !== 'confirmed')) map.set(b.slotKey, b);
@@ -58,6 +62,7 @@ export default function AdminManualBooking() {
 
   async function submit(e) {
     e.preventDefault();
+    if (!canManualBooking) { setError('You do not have permission to create manual bookings.'); return; }
     if (!selectedSlot) {
       setError('Choose an available slot first.');
       return;

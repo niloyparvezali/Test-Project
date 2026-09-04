@@ -8,4 +8,6 @@ const appConfig={
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 const app=initializeApp(appConfig,'functions-client');
-export const functions=getFunctions(app);
+// listAdminAccounts is a Firebase callable function deployed in us-central1.
+// Keep the client region explicit so the callable transport targets the same deployment.
+export const functions=getFunctions(app,'us-central1');

@@ -1,4 +1,4 @@
-export const BRAND_NAME = 'Konabari Turf';
+export const BRAND_NAME = 'TestWeb Turf';
 
 export function displayBrand(value) {
   const text = String(value ?? '').trim();

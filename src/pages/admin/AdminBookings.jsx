@@ -1,32 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, ClipboardList, ShieldCheck, Clock3, CheckCircle2, X, XCircle } from 'lucide-react';
+import { ArrowRight, CalendarDays, ClipboardList, ShieldCheck, Clock3, XCircle } from 'lucide-react';
 import { useCollection } from '../../hooks/useFirestore';
-import { bookingDate, bookingStatusExpired, displayDate, localDate, timeLabel, money } from '../../utils/dateUtils';
+import { bookingDate, displayDate, timeLabel } from '../../utils/dateUtils';
 import { confirmBookingClient, rejectBookingClient } from '../../services/bookingService';
 import { AdminPageHeader, EmptyState, LoadingState, Modal } from '../../components/ui';
 import BookingRequestCard from './BookingRequestCard';
-
-function ReviewModal({ booking, onClose, onConfirm, busy, error }) {
-  return (
-    <Modal title="Verify payment & accept booking" onClose={onClose}>
-      <div className="verification-card">
-        <div><span>Customer</span><strong>{booking.customerName || '—'}</strong></div>
-        <div><span>Booking</span><strong>{displayDate(bookingDate(booking), { day: '2-digit', month: 'short', year: 'numeric' })} · {timeLabel(booking.slotStart)} – {timeLabel(booking.slotEnd)}</strong></div>
-        <div><span>Payment method</span><strong>{booking.paymentMethod || '—'}</strong></div>
-        <div><span>Advance</span><strong>{money(booking.paymentAmount || booking.advanceAmount || 0)}</strong></div>
-        <div><span>Transaction ID</span><strong className="mono">{booking.transactionId || '—'}</strong></div>
-        <p>Confirm the submitted payment is valid. The existing secure booking service will confirm the booking and record the payment.</p>
-        {error && <div className="error">{error}</div>}
-      </div>
-      <div className="modal-actions">
-        <button className="secondary" onClick={onClose} disabled={busy}>Cancel</button>
-        <button className="primary" onClick={onConfirm} disabled={busy}>
-          {busy ? 'Verifying…' : 'Confirm & accept'} <CheckCircle2 />
-        </button>
-      </div>
-    </Modal>
-  );
-}
+import VerifyBookingModal from './VerifyBookingModal';
+import { useAdminRole } from '../../hooks/useAdminRole';
+import { ADMIN_PERMISSIONS } from '../../config/adminPermissions';
 
 function RejectModal({ booking, onClose, onConfirm, busy }) {
   const [reason, setReason] = useState('');
@@ -56,9 +37,12 @@ function RejectModal({ booking, onClose, onConfirm, busy }) {
 
 function BookingManagement() {
   const bookings = useCollection('bookings');
+  const { can } = useAdminRole();
+  const canAccept = can(ADMIN_PERMISSIONS.ACCEPT_BOOKING);
+  const canReject = can(ADMIN_PERMISSIONS.REJECT_BOOKING);
   const pending = useMemo(
     () => bookings
-      .filter((b) => b.status === 'pending_payment_verification' && !bookingStatusExpired(b))
+      .filter((b) => b.status === 'pending_payment_verification')
       .sort((a, b) => {
         const ad = String(a.createdAt?.toMillis?.() || 0);
         const bd = String(b.createdAt?.toMillis?.() || 0);
@@ -137,6 +121,8 @@ function BookingManagement() {
                 busy={busyId === booking.id}
                 onAccept={(b) => { setError(''); setModal({ type: 'accept', booking: b }); }}
                 onReject={(b) => { setError(''); setModal({ type: 'reject', booking: b }); }}
+                canAccept={canAccept}
+                canReject={canReject}
               />
             ))}
           </div>
@@ -172,7 +158,7 @@ function BookingManagement() {
       </section>
 
       {modal?.type === 'accept' && (
-        <ReviewModal
+        <VerifyBookingModal
           booking={modal.booking}
           busy={busyId === modal.booking.id}
           error={error}

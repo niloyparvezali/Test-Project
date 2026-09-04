@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Clock3, Moon, Plus, Sun } from 'lucide-react';
 import { useCollection, useDoc } from '../../hooks/useFirestore';
-import { bookingDate, bookingStatusExpired, dateShift, displayDate, localDate, money, timeLabel } from '../../utils/dateUtils';
+import { bookingDate, dateShift, displayDate, localDate, money, timeLabel } from '../../utils/dateUtils';
 import { generateSlots, slotPriceFromPricing } from '../../utils/slotUtils';
 import { getSlotStatus } from '../../utils/slotStatus';
 import { AdminPageHeader, EmptyState, LoadingState, StatCard } from '../../components/ui';
@@ -43,7 +43,7 @@ export default function AdminSlots() {
     const map = new Map();
     bookings.forEach((b) => {
       if (bookingDate(b) !== selectedDate || !b.slotKey) return;
-      const active = b.status === 'confirmed' || (b.status === 'pending_payment_verification' && !bookingStatusExpired(b));
+      const active = b.status === 'confirmed' || (b.status === 'pending_payment_verification');
       if (!active) return;
       const previous = map.get(b.slotKey);
       if (!previous || (b.status === 'confirmed' && previous.status !== 'confirmed')) map.set(b.slotKey, b);

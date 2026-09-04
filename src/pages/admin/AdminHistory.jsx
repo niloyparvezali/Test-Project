@@ -84,10 +84,10 @@ function downloadBookingRecord(booking, detailPayments) {
     : '<tr><td colspan="3">No admin activity fields are available.</td></tr>';
 
   const dateText = displayDate(bookingDate(booking), { day: '2-digit', month: 'short', year: 'numeric' });
-  const filename = `konabari-turf-booking-${String(booking.id || 'record').replace(/[^a-z0-9_-]/gi, '-')}.html`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Konabari Turf — Booking Record</title>
+  const filename = `testweb-turf-booking-${String(booking.id || 'record').replace(/[^a-z0-9_-]/gi, '-')}.html`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>TestWeb Turf — Booking Record</title>
 <style>body{font-family:Arial,sans-serif;color:#132019;max-width:900px;margin:36px auto;padding:0 20px}h1{margin:0;font-size:24px}h2{font-size:15px;margin:28px 0 10px;border-bottom:1px solid #d8e1db;padding-bottom:7px}p{margin:6px 0;color:#526159}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px}.item{padding:8px 0}.item b{display:block;color:#68766f;font-size:11px;text-transform:uppercase;letter-spacing:.06em}.item span{display:block;margin-top:3px;font-size:14px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px;border-bottom:1px solid #e4ebe6}th{color:#526159;font-size:11px;text-transform:uppercase} @media(max-width:640px){.grid{grid-template-columns:1fr}}</style></head><body>
-<h1>Konabari Turf</h1><p>Booking Record</p>
+<h1>TestWeb Turf</h1><p>Booking Record</p>
 <h2>Customer & Booking</h2><div class="grid">
 <div class="item"><b>Customer</b><span>${escapeHtml(booking.customerName || '—')}</span></div>
 <div class="item"><b>Phone</b><span>${escapeHtml(booking.phone || '—')}</span></div>
@@ -203,7 +203,7 @@ export default function AdminHistory() {
   return (
     <>
       <AdminPageHeader
-        eyebrow="KONABARI TURF · ADMIN"
+        eyebrow="TESTWEB TURF · ADMIN"
         title="Booking History"
         subtitle="Past matches are retained for 15 days from their scheduled slot start time."
         actions={<button className="secondary" onClick={() => { window.history.pushState({}, '', '/admin/bookings'); window.dispatchEvent(new PopStateEvent('popstate')); }}><ArrowLeft /> Bookings</button>}

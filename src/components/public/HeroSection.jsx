@@ -33,7 +33,7 @@ export default function HeroSection({ turf, gallery, go }) {
           {image ? (
             <img
               src={image.url}
-              alt={image.alt || 'Konabari Turf football turf'}
+              alt={image.alt || 'TestWeb Turf football turf'}
               loading="eager"
             />
           ) : (

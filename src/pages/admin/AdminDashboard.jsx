@@ -1,13 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, CalendarCheck, CheckCircle2, Clock3, Plus, ReceiptText, Wallet, CreditCard, Search, Phone } from 'lucide-react';
 import { useCollection, useDoc } from '../../hooks/useFirestore';
-import { bookingDate, bookingStatusExpired, localDate, money, timeLabel, dateShift, displayDate, TZ } from '../../utils/dateUtils';
+import { bookingDate, localDate, money, timeLabel, dateShift, displayDate, TZ, transactionDateKey } from '../../utils/dateUtils';
 import { zonedSlotStartMs } from '../../utils/slotStatus';
 import { generateSlots } from '../../utils/slotUtils';
 import { getSlotStatus } from '../../utils/slotStatus';
 import { AdminPageHeader, EmptyState, LoadingState, Modal } from '../../components/ui';
+import { useAdminRole } from '../../hooks/useAdminRole';
+import { ADMIN_PERMISSIONS } from '../../config/adminPermissions';
 
 export default function AdminDashboard({ go }) {
+  const { can } = useAdminRole();
+  const canManualBooking = can(ADMIN_PERMISSIONS.MANUAL_BOOKING);
+  const canBookings = can(ADMIN_PERMISSIONS.VIEW_BOOKINGS);
+  const canCollection = can(ADMIN_PERMISSIONS.VIEW_COLLECTION);
+  const canHistory = can(ADMIN_PERMISSIONS.VIEW_HISTORY);
+  const canActivity = can(ADMIN_PERMISSIONS.VIEW_ACTIVITY);
   const bookings = useCollection('bookings');
   const payments = useCollection('payments');
   const expenses = useCollection('expenses');
@@ -32,21 +40,21 @@ export default function AdminDashboard({ go }) {
     const counts = { total: todaySlots.length, available: 0, pending: 0, booked: 0 };
     todaySlots.forEach((slot) => {
       const matching = bookings.filter((b) => bookingDate(b) === today && b.slotKey === slot.key);
-      const booking = matching.find((b) => b.status === 'confirmed') || matching.find((b) => b.status === 'pending_payment_verification' && !bookingStatusExpired(b)) || null;
+      const booking = matching.find((b) => b.status === 'confirmed') || matching.find((b) => b.status === 'pending_payment_verification') || null;
       counts[getSlotStatus(slot, booking, null)] += 1;
     });
     return counts;
   }, [todaySlots, bookings, today]);
 
-  const pending = bookings.filter((b) => b.status === 'pending_payment_verification' && !bookingStatusExpired(b));
+  const pending = bookings.filter((b) => b.status === 'pending_payment_verification');
   const todayBookings = bookings.filter((b) => bookingDate(b) === today && b.status === 'confirmed').length;
-  const todayRevenue = payments.filter((p) => String(p.paymentDate || '').startsWith(today)).reduce((sum, p) => sum + Number(p.amount || 0), 0);
-  const todayExpenses = expenses.filter((e) => String(e.date || '').startsWith(today)).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const todayRevenue = payments.filter((p) => transactionDateKey(p.createdAt) === today).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const todayExpenses = expenses.filter((e) => transactionDateKey(e.createdAt) === today).reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
   const prefix = period === 'month' ? today.slice(0, 7) : today.slice(0, 4);
   const periodLabel = period === 'month' ? 'This month' : 'This year';
   const periodBookings = bookings.filter((b) => bookingDate(b).startsWith(prefix) && b.status === 'confirmed').length;
-  const periodRevenue = payments.filter((p) => String(p.paymentDate || '').startsWith(prefix)).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const periodRevenue = payments.filter((p) => transactionDateKey(p.createdAt).startsWith(prefix)).reduce((sum, p) => sum + Number(p.amount || 0), 0);
   const periodTrend = useMemo(() => {
     if (period === 'month') {
       const year = Number(today.slice(0, 4));
@@ -56,7 +64,7 @@ export default function AdminDashboard({ go }) {
         const day = String(index + 1).padStart(2, '0');
         const key = `${today.slice(0, 7)}-${day}`;
         const value = payments
-          .filter((p) => String(p.paymentDate || '').slice(0, 10) === key)
+          .filter((p) => transactionDateKey(p.createdAt) === key)
           .reduce((sum, p) => sum + Number(p.amount || 0), 0);
         return { key, label: (index === 0 || (index + 1) % 5 === 0 || index === daysInMonth - 1) ? String(index + 1) : '', value };
       });
@@ -66,7 +74,7 @@ export default function AdminDashboard({ go }) {
       const month = String(index + 1).padStart(2, '0');
       const key = `${today.slice(0, 4)}-${month}`;
       const value = payments
-        .filter((p) => String(p.paymentDate || '').startsWith(key))
+        .filter((p) => transactionDateKey(p.createdAt).startsWith(key))
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
       return {
         key,
@@ -134,7 +142,7 @@ export default function AdminDashboard({ go }) {
     <>
       <AdminPageHeader
         eyebrow="ADMIN HOME"
-        title="Konabari Turf"
+        title="TestWeb Turf"
         subtitle="Good Evening, Admin · Here’s what’s happening today."
         actions={<button className="primary" onClick={() => go('slots')}><CalendarCheck /> Open bookings</button>}
       />
@@ -145,7 +153,7 @@ export default function AdminDashboard({ go }) {
           <h3>{pending.length ? `${pending.length} online booking request${pending.length === 1 ? '' : 's'} waiting` : 'No booking requests waiting'}</h3>
           <p>{pending.length ? 'Open Booking Management to verify payment and accept customers immediately.' : 'The request queue is clear. New online requests will appear here automatically.'}</p>
         </div>
-        <button className="primary" onClick={() => go('bookings')}>{pending.length ? 'Review requests' : 'Booking management'} <ArrowRight /></button>
+        {canBookings && <button className="primary" onClick={() => go('bookings')}>{pending.length ? 'Review requests' : 'Booking management'} <ArrowRight /></button>}
       </section>
 
       <div className="home-stats-grid">
@@ -159,13 +167,13 @@ export default function AdminDashboard({ go }) {
           <div><span className="eyebrow">QUICK ACTIONS</span><h3>Run the day faster</h3></div>
         </div>
         <div className="quick-action-grid-v3">
-          <button onClick={() => go('manual-booking')}><Plus /><span><b>MANUAL BOOKING</b><small>Book an offline customer</small></span><ArrowRight /></button>
+          {canManualBooking && <button onClick={() => go('manual-booking')}><Plus /><span><b>MANUAL BOOKING</b><small>Book an offline customer</small></span><ArrowRight /></button>}
           <button className="home-more-tool-action" onClick={() => setCallsOpen(true)}>
             <Phone /><span><b>UPCOMING CALLS</b><small>{upcomingCalls.length ? `${upcomingCalls.length} customer${upcomingCalls.length === 1 ? '' : 's'} · Call upcoming customers` : 'No upcoming customers to call'}</small></span><ArrowRight />
           </button>
-          <button className="home-more-tool-action" onClick={() => go('collection')}>
+          {canCollection && <button className="home-more-tool-action" onClick={() => go('collection')}>
             <CreditCard /><span><b>COLLECT PAYMENT</b><small>Record a customer's payment</small></span><ArrowRight />
-          </button>
+          </button>}
         </div>
       </section>
 
@@ -288,8 +296,8 @@ export default function AdminDashboard({ go }) {
       </section>
 
       <section className="home-link-list">
-        <button onClick={() => go('activity')}><ReceiptText /><span><b>RECENT ACTIVITY</b><small>Latest booking and payment events</small></span><ArrowRight /></button>
-        <button onClick={() => go('history')}><CalendarCheck /><span><b>BOOKING HISTORY</b><small>View confirmed booking records</small></span><ArrowRight /></button>
+        {canActivity && <button onClick={() => go('activity')}><ReceiptText /><span><b>RECENT ACTIVITY</b><small>Latest booking and payment events</small></span><ArrowRight /></button>}
+        {canHistory && <button onClick={() => go('history')}><CalendarCheck /><span><b>BOOKING HISTORY</b><small>View confirmed booking records</small></span><ArrowRight /></button>}
       </section>
     </>
   );

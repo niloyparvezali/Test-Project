@@ -54,7 +54,7 @@ function zonedSlotStartMs(sessionDate, slotStart, timeZone = TZ) {
 
 function bookingHistoryCutoffMs(booking, timeZone = TZ) {
     const start = zonedSlotStartMs(bookingSlotDate(booking), booking?.slotStart, timeZone);
-    return start ? start + 7 * 24 * 60 * 60 * 1000 : 0;
+    return start ? start + 15 * 24 * 60 * 60 * 1000 : 0;
 }
 
 function isBookingHistoryRetained(booking, nowMs = Date.now(), timeZone = TZ) {

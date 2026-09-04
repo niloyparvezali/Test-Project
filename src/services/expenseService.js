@@ -1,5 +1,5 @@
 import { auth, db } from '../firebase';
-import { collection, doc, getDocs, query, where, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { getCurrentAdminActor, logAdminActivity } from './adminActivityService';
 
 async function createExpenseClient(f){

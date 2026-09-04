@@ -17,7 +17,7 @@ import {
 import { auth } from '../../firebase';
 import { signOut } from 'firebase/auth';
 import { useCollection } from '../../hooks/useFirestore';
-import { bookingStatusExpired } from '../../utils/dateUtils';
+import {} from '../../utils/dateUtils';
 import { PendingPill } from '../../components/ui';
 import AdminDashboard from './AdminDashboard';
 import AdminCollection from './AdminCollection';
@@ -34,6 +34,7 @@ import AdminPricing from './AdminPricing';
 import AdminAccounts from './AdminAccounts';
 import { BRAND_NAME } from '../../config/brand';
 import { useAdminRole } from '../../hooks/useAdminRole';
+import { ADMIN_PERMISSIONS } from '../../config/adminPermissions';
 
 const PRIMARY = [
   ['home', 'Home', LayoutDashboard],
@@ -103,19 +104,41 @@ const SUPPORTED_PAGES = new Set([
   'admin-accounts',
 ]);
 
+const PAGE_PERMISSIONS = {
+  home: ADMIN_PERMISSIONS.VIEW_HOME,
+  bookings: ADMIN_PERMISSIONS.VIEW_BOOKINGS,
+  slots: ADMIN_PERMISSIONS.VIEW_SLOTS,
+  collection: ADMIN_PERMISSIONS.VIEW_COLLECTION,
+  'manual-booking': ADMIN_PERMISSIONS.MANUAL_BOOKING,
+  requests: ADMIN_PERMISSIONS.VIEW_BOOKINGS,
+  activity: ADMIN_PERMISSIONS.VIEW_ACTIVITY,
+  history: ADMIN_PERMISSIONS.VIEW_HISTORY,
+  finance: ADMIN_PERMISSIONS.VIEW_FINANCE,
+  expenses: ADMIN_PERMISSIONS.MANAGE_EXPENSES,
+  turf: ADMIN_PERMISSIONS.MANAGE_TURF_SETTINGS,
+  pricing: ADMIN_PERMISSIONS.MANAGE_PRICING,
+};
+
+function canViewPage(page, can, isFullAdmin) {
+  if (page === 'admin-accounts') return isFullAdmin;
+  const permission = PAGE_PERMISSIONS[page];
+  return permission ? can(permission) : false;
+}
+
 function getRoutePart() {
   const value = window.location.pathname.split('/')[2] || 'home';
   return value === 'dashboard' ? 'home' : value;
 }
 
 function AdminShell({ user, go }) {
-  const { isAdmin, loading: roleLoading, uid } = useAdminRole();
+  const { isAdmin, isFullAdmin, loading: roleLoading, uid, can } = useAdminRole();
   const [page, setPage] = useState(getRoutePart());
   const [menuOpen, setMenuOpen] = useState(false);
-  const bookings = useCollection('bookings');
+  const canReadBookingData = can(ADMIN_PERMISSIONS.VIEW_HOME) || can(ADMIN_PERMISSIONS.VIEW_BOOKINGS) || can(ADMIN_PERMISSIONS.VIEW_COLLECTION) || can(ADMIN_PERMISSIONS.VIEW_HISTORY) || can(ADMIN_PERMISSIONS.VIEW_ACTIVITY) || can(ADMIN_PERMISSIONS.MANUAL_BOOKING) || can(ADMIN_PERMISSIONS.ACCEPT_BOOKING) || can(ADMIN_PERMISSIONS.REJECT_BOOKING) || can(ADMIN_PERMISSIONS.CANCEL_BOOKING);
+  const bookings = useCollection('bookings', canReadBookingData);
 
   const pendingCount = bookings.filter((b) => (
-    b.status === 'pending_payment_verification' && !bookingStatusExpired(b)
+    b.status === 'pending_payment_verification'
   )).length;
 
   useEffect(() => {
@@ -130,6 +153,7 @@ function AdminShell({ user, go }) {
   }, []);
 
   const navigate = (path) => {
+    if (!canViewPage(path, can, isFullAdmin)) return;
     go(`/admin/${path}`);
     setPage(path);
     setMenuOpen(false);
@@ -152,6 +176,7 @@ function AdminShell({ user, go }) {
 
   const initials = String(user?.email || 'A').slice(0, 1).toUpperCase();
   const currentTitle = TITLES[page] || 'Home';
+  const pageAllowed = canViewPage(page, can, isFullAdmin);
 
   if (roleLoading) {
     return <div className="admin-app-v3"><div className="admin-loading-screen">Checking admin access…</div></div>;
@@ -165,7 +190,7 @@ function AdminShell({ user, go }) {
           <span className="eyebrow">ADMIN ACCESS</span>
           <h1>Admin access required</h1>
           <p>Your Firebase account is signed in, but it is not registered as an Admin.</p>
-          <div className="error"><b>UID:</b> <code>{uid || 'Unavailable'}</code><br />Ask the project owner to create <code>users/{uid || '<UID>'}</code> with <code>role: "admin"</code> in Firestore.</div>
+          <div className="error"><b>UID:</b> <code>{uid || 'Unavailable'}</code><br />Ask the project owner to create or assign an Admin profile for your account.</div>
           <button className="primary full" onClick={() => signOut(auth)}>Sign out <LogOut /></button>
         </div>
       </div>
@@ -196,12 +221,14 @@ function AdminShell({ user, go }) {
         </button>
 
         <div className="admin-nav-final-scroll">
-          {DESKTOP_GROUPS.map((group) => (
-            <section className="admin-nav-final-section" key={group.label}>
+          {DESKTOP_GROUPS.map((group) => {
+            const items = group.items.filter(([id]) => canViewPage(id, can, isFullAdmin));
+            if (!items.length) return null;
+            return <section className="admin-nav-final-section" key={group.label}>
               <span className="admin-nav-final-section-label">{group.label}</span>
-              {group.items.map((item) => renderNavItem(item))}
-            </section>
-          ))}
+              {items.map((item) => renderNavItem(item))}
+            </section>;
+          })}
 
           <section className="admin-nav-final-section admin-nav-final-account">
             <span className="admin-nav-final-section-label">ADMIN / ACCOUNT</span>
@@ -212,7 +239,7 @@ function AdminShell({ user, go }) {
                 <small>Administrator</small>
               </div>
             </div>
-            {renderNavItem(['admin-accounts', 'Manage Admins', UserRoundCog])}
+            {isFullAdmin && renderNavItem(['admin-accounts', 'Manage Admins', UserRoundCog])}
             <button type="button" className="admin-nav-final-item admin-nav-final-logout" onClick={() => signOut(auth)}>
               <span className="admin-nav-final-icon"><LogOut /></span>
               <span className="admin-nav-final-label">Logout</span>
@@ -246,12 +273,14 @@ function AdminShell({ user, go }) {
             </div>
 
             <div className="admin-nav-final-drawer-scroll">
-              {SECONDARY_GROUPS.map((group) => (
-                <section className="admin-nav-final-section" key={group.label}>
+              {SECONDARY_GROUPS.map((group) => {
+                const items = group.items.filter(([id]) => canViewPage(id, can, isFullAdmin));
+                if (!items.length) return null;
+                return <section className="admin-nav-final-section" key={group.label}>
                   <span className="admin-nav-final-section-label">{group.label}</span>
-                  {group.items.map((item) => renderNavItem(item))}
-                </section>
-              ))}
+                  {items.map((item) => renderNavItem(item))}
+                </section>;
+              })}
 
               <section className="admin-nav-final-section admin-nav-final-account">
                 <span className="admin-nav-final-section-label">ADMIN / ACCOUNT</span>
@@ -262,7 +291,7 @@ function AdminShell({ user, go }) {
                     <small>Administrator</small>
                   </div>
                 </div>
-                {renderNavItem(['admin-accounts', 'Manage Admins', UserRoundCog])}
+                {isFullAdmin && renderNavItem(['admin-accounts', 'Manage Admins', UserRoundCog])}
                 <button
                   type="button"
                   className="admin-nav-final-item admin-nav-final-logout"
@@ -290,12 +319,12 @@ function AdminShell({ user, go }) {
                 <Menu />
               </button>
               <div>
-                <span className="eyebrow">KONABARI TURF · ADMIN</span>
+                <span className="eyebrow">TESTWEB TURF · ADMIN</span>
                 <h1>{currentTitle}</h1>
               </div>
             </div>
             <div className="admin-nav-final-desktop-header">
-              <span className="eyebrow">KONABARI TURF · ADMIN</span>
+              <span className="eyebrow">TESTWEB TURF · ADMIN</span>
               <h1>{currentTitle}</h1>
             </div>
           </div>
@@ -311,36 +340,39 @@ function AdminShell({ user, go }) {
         </header>
 
         <div className="admin-content-v3">
-          {page === 'home' && <AdminDashboard go={navigate} />}
-          {page === 'bookings' && <AdminBookings />}
-          {page === 'slots' && <AdminSlots />}
-          {page === 'collection' && <AdminCollection />}
-          {page === 'manual-booking' && <AdminManualBooking />}
-          {page === 'requests' && <AdminRequests />}
-          {page === 'activity' && <AdminActivity />}
-          {page === 'history' && <AdminHistory />}
-          {page === 'finance' && <AdminFinance />}
-          {page === 'expenses' && <AdminExpenses />}
-          {page === 'turf' && <AdminTurf />}
-          {page === 'pricing' && <AdminPricing />}
-          {page === 'admin-accounts' && <AdminAccounts user={user} />}
+          {!pageAllowed ? (
+            <section className="section-card"><div className="empty-state-v2"><b>Access restricted</b><p>Your current Admin permissions do not include this page.</p></div></section>
+          ) : null}
+          {pageAllowed && page === 'home' && <AdminDashboard go={navigate} />}
+          {pageAllowed && page === 'bookings' && <AdminBookings />}
+          {pageAllowed && page === 'slots' && <AdminSlots />}
+          {pageAllowed && page === 'collection' && <AdminCollection />}
+          {pageAllowed && page === 'manual-booking' && <AdminManualBooking />}
+          {pageAllowed && page === 'requests' && <AdminRequests />}
+          {pageAllowed && page === 'activity' && <AdminActivity />}
+          {pageAllowed && page === 'history' && <AdminHistory />}
+          {pageAllowed && page === 'finance' && <AdminFinance />}
+          {pageAllowed && page === 'expenses' && <AdminExpenses />}
+          {pageAllowed && page === 'turf' && <AdminTurf />}
+          {pageAllowed && page === 'pricing' && <AdminPricing />}
+          {pageAllowed && page === 'admin-accounts' && <AdminAccounts user={user} />}
         </div>
       </main>
 
       <nav className="admin-bottom-nav-v3" aria-label="Mobile admin navigation">
-        <button className={page === 'home' ? 'active' : ''} onClick={() => navigate('home')}>
+        {canViewPage('home', can, isFullAdmin) && <button className={page === 'home' ? 'active' : ''} onClick={() => navigate('home')}>
           <LayoutDashboard /><span>Home</span>
-        </button>
-        <button className={page === 'bookings' ? 'active' : ''} onClick={() => navigate('bookings')}>
+        </button>}
+        {canViewPage('bookings', can, isFullAdmin) && <button className={page === 'bookings' ? 'active' : ''} onClick={() => navigate('bookings')}>
           <span className="bottom-icon-wrap"><CalendarCheck />{pendingCount > 0 && <i>{pendingCount > 9 ? '9+' : pendingCount}</i>}</span>
           <span>Bookings</span>
-        </button>
-        <button className={page === 'slots' ? 'active' : ''} onClick={() => navigate('slots')}>
+        </button>}
+        {canViewPage('slots', can, isFullAdmin) && <button className={page === 'slots' ? 'active' : ''} onClick={() => navigate('slots')}>
           <Clock3 /><span>Slots</span>
-        </button>
-        <button className={page === 'collection' ? 'active' : ''} onClick={() => navigate('collection')}>
+        </button>}
+        {canViewPage('collection', can, isFullAdmin) && <button className={page === 'collection' ? 'active' : ''} onClick={() => navigate('collection')}>
           <Wallet /><span>Collection</span>
-        </button>
+        </button>}
       </nav>
     </div>
   );

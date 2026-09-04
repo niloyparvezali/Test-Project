@@ -3,9 +3,6 @@ import {
     collection,
     doc,
     getDoc,
-    getDocs,
-    query,
-    where,
     runTransaction,
     serverTimestamp
 } from 'firebase/firestore';
@@ -94,10 +91,7 @@ async function confirmBookingClient(booking) {
     if (!auth.currentUser) throw new Error('Admin session expired. Please sign in again.');
     const txnId = String((booking && booking.transactionId) || '').trim();
     if (!txnId) throw new Error('This request has no transaction ID.');
-    const oldPayments = await getDocs(query(collection(db, 'payments'), where('transactionId', '==', txnId)));
-    if (!oldPayments.empty) throw new Error('Transaction ID already used for another confirmed payment.');
-    const oldBookings = await getDocs(query(collection(db, 'bookings'), where('transactionId', '==', txnId)));
-    if (!oldBookings.empty && oldBookings.docs.some(x => x.data().status === 'confirmed')) throw new Error('Transaction ID already used for another confirmed payment.');
+    const currentBookingId = String(booking?.id || '').trim();
     const bookingRef = doc(db, 'bookings', booking.id);
     const lockRef = doc(db, 'slotLocks', booking.slotKey);
     const paymentRef = doc(db, 'payments', `txn_${encodeURIComponent(txnId).slice(0,300)}`);
@@ -111,7 +105,13 @@ async function confirmBookingClient(booking) {
         const lock = await tx.get(lockRef);
         if (!lock.exists() || lock.data().status !== 'pending_payment_verification') throw new Error('The slot lock is no longer active.');
         const paymentCheck = await tx.get(paymentRef);
-        if (paymentCheck.exists()) throw new Error('Transaction ID already used for another confirmed payment.');
+        if (paymentCheck.exists()) {
+            const existingPayment = paymentCheck.data() || {};
+            const existingBookingId = String(existingPayment.bookingId || '').trim();
+            if (existingBookingId !== booking.id) {
+                throw new Error('Transaction ID already used by another confirmed payment.');
+            }
+        }
         const amount = Math.round(Number(b.paymentAmount || b.advanceAmount || 0) * 1000) / 1000;
         const total = Number(b.totalAmount || b.slotPrice || 0);
         const required = Number(b.advanceAmount || 0);
@@ -137,7 +137,7 @@ async function confirmBookingClient(booking) {
             bookingId: booking.id,
             amount,
             paymentMethod: String(b.paymentMethod || 'Other'),
-            paymentDate: String(b.sessionDate || b.date || localDate()),
+            
             note: 'Public booking payment',
             transactionId: txnId,
             createdAt: now,
@@ -149,7 +149,7 @@ async function confirmBookingClient(booking) {
             category: 'Booking payment',
             referenceId: booking.id,
             description: `Payment for booking ${booking.id}`,
-            date: String(b.sessionDate || b.date || localDate()),
+            
             transactionId: txnId,
             createdAt: now,
             createdBy: auth.currentUser.uid
@@ -285,7 +285,6 @@ async function createManualBookingClient({ slot, customerName, phone, adminNote,
                 bookingId: bookingRef.id,
                 amount: advance,
                 paymentMethod: 'Manual',
-                paymentDate: date,
                 note: 'Manual booking advance payment',
                 transactionId: '',
                 createdAt: now,
@@ -314,13 +313,18 @@ async function createManualBookingClient({ slot, customerName, phone, adminNote,
 }
 
 
-async function recordPaymentClient({ bookingId, amount, paymentMethod, paymentDate, note, transactionId }) {
+async function recordPaymentClient({ bookingId, amount, paymentMethod, note, transactionId }) {
     const actor = await getCurrentAdminActor();
     const method = String(paymentMethod || '').trim();
     if (!['Cash', 'bKash', 'Nagad', 'Rocket'].includes(method)) throw new Error('Please select a payment method.');
-    const bookingRef = doc(db, 'bookings', bookingId),
-        paymentRef = doc(collection(db, 'payments')),
-        txRef = doc(collection(db, 'transactions'));
+    const bookingRef = doc(db, 'bookings', bookingId);
+    const cleanTransactionId = String(transactionId || '').trim();
+    const paymentRef = cleanTransactionId
+        ? doc(db, 'payments', `txn_${encodeURIComponent(cleanTransactionId).slice(0,300)}`)
+        : doc(collection(db, 'payments'));
+    const txRef = cleanTransactionId
+        ? doc(db, 'transactions', `txn_${encodeURIComponent(cleanTransactionId).slice(0,300)}`)
+        : doc(collection(db, 'transactions'));
     const n = Math.round(Number(amount || 0) * 1000) / 1000;
     if (n <= 0) throw new Error('Payment must be greater than zero.');
     await runTransaction(db, async tx => {
@@ -334,8 +338,13 @@ async function recordPaymentClient({ bookingId, amount, paymentMethod, paymentDa
         const now = serverTimestamp(),
             newPaid = paid + n;
         tx.update(bookingRef, { paidAmount: newPaid, advanceAmount: Number(b.advanceAmount || 0), remainingAmount: total - newPaid, dueAmount: total - newPaid, updatedAt: now, updatedBy: actor.actorUid, updatedByEmail: actor.actorEmail });
-        tx.set(paymentRef, { bookingId, amount: n, paymentMethod: method, paymentDate: String(paymentDate || b.sessionDate), note: String(note || ''), transactionId: String(transactionId || ''), createdAt: now, createdBy: auth.currentUser.uid, recordedByUid: actor.actorUid, recordedByName: actor.actorName, recordedByEmail: actor.actorEmail });
-        tx.set(txRef, { type: 'income', amount: n, category: 'Booking payment', referenceId: bookingId, description: `Payment for booking ${bookingId}`, date: String(paymentDate || b.sessionDate), transactionId: String(transactionId || ''), createdAt: now, createdBy: auth.currentUser.uid, recordedByUid: actor.actorUid, recordedByName: actor.actorName, recordedByEmail: actor.actorEmail, paymentMethod: method });
+        const cleanTransactionId = String(transactionId || '').trim();
+        const paymentCheck = cleanTransactionId ? await tx.get(paymentRef) : null;
+        if (paymentCheck?.exists()) {
+            throw new Error('Transaction ID has already been recorded.');
+        }
+        tx.set(paymentRef, { bookingId, amount: n, paymentMethod: method, note: String(note || ''), transactionId: String(transactionId || ''), createdAt: now, createdBy: auth.currentUser.uid, recordedByUid: actor.actorUid, recordedByName: actor.actorName, recordedByEmail: actor.actorEmail });
+        tx.set(txRef, { type: 'income', amount: n, category: 'Booking payment', referenceId: bookingId, description: `Payment for booking ${bookingId}`, transactionId: String(transactionId || ''), createdAt: now, createdBy: auth.currentUser.uid, recordedByUid: actor.actorUid, recordedByName: actor.actorName, recordedByEmail: actor.actorEmail, paymentMethod: method });
     });
     await logAdminActivity({
         action: 'payment_recorded',
