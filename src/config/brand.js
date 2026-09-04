@@ -1,8 +1,9 @@
-export const BRAND_NAME = 'Bason Turf City';
+export const BRAND_NAME = 'Konabari Turf';
 
 export function displayBrand(value) {
   const text = String(value ?? '').trim();
   if (!text || /^(turf\s*club|turfclub)$/i.test(text)) return BRAND_NAME;
+  if (/^bason\s+turf(?:\s+city)?$/i.test(text)) return BRAND_NAME;
   return text;
 }
 

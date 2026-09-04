@@ -20,7 +20,7 @@ function AdminLogin(){
        {err&&<div className="error">{err}</div>}
        <button className="primary full" disabled={busy}>{busy?'Signing in…':'Sign in'} <LockKeyhole/></button>
      </form>
-     <div className="login-security"><ShieldCheck/><span>Protected Bason Turf City management area</span></div>
+     <div className="login-security"><ShieldCheck/><span>Protected Konabari Turf management area</span></div>
    </div>
  </div>
 }

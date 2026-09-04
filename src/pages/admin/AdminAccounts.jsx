@@ -189,7 +189,7 @@ export default function AdminAccounts({user}){
   }
 
   return <>
-    <AdminPageHeader eyebrow="ADMIN / ACCOUNT" title="Admin Accounts" subtitle="Manage the administrators who have full access to Bason Turf City." actions={<button className="primary" onClick={()=>{setMessage('');setModal('create')}}><UserPlus/> Create Admin</button>}/>
+    <AdminPageHeader eyebrow="ADMIN / ACCOUNT" title="Admin Accounts" subtitle="Manage the administrators who have full access to Konabari Turf." actions={<button className="primary" onClick={()=>{setMessage('');setModal('create')}}><UserPlus/> Create Admin</button>}/>
     {message&&<div className="success" role="status"><p>{message}</p></div>}
     <SectionCard eyebrow="ADMIN ACCOUNTS" title={`${sortedAdmins.length} administrator${sortedAdmins.length===1?'':'s'}`}>
       <div className="admin-account-list">
@@ -212,7 +212,7 @@ export default function AdminAccounts({user}){
     {modal==='create'&&<CreateAdminModal onClose={()=>setModal(null)} onCreated={()=>{setModal(null);setMessage('Admin account created successfully.');refresh();}}/>}
     {modal==='password'&&<ChangePasswordModal onClose={()=>{setModal(null);setMessage('')}}/>}
     {modal==='delete'&&<Modal title="Delete your admin account?" onClose={()=>{if(!deleteBusy)setModal(null);}}>
-      <div className="verification-card"><p>You will lose access to the Bason Turf City Admin panel.</p><p>This action only deletes your own Admin account. Existing bookings, payments and audit history remain.</p></div>
+      <div className="verification-card"><p>You will lose access to the Konabari Turf Admin panel.</p><p>This action only deletes your own Admin account. Existing bookings, payments and audit history remain.</p></div>
       <div className="modal-actions"><button className="secondary" onClick={()=>setModal(null)} disabled={deleteBusy}>Cancel</button><button className="danger-btn" onClick={async()=>{
         try{
           const fn=httpsCallable(functions,'deleteOwnAdminAccount');

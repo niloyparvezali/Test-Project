@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Info } from 'lucide-react';
 import { X } from 'lucide-react';
 
-function Loading(){return <div className="loading"><div className="ball">⚽</div><span>Loading Bason Turf City…</span></div>}
+function Loading(){return <div className="loading"><div className="ball">⚽</div><span>Loading Konabari Turf…</span></div>}
 function Empty({title='No data available',text=''}){return <div className="empty"><div className="empty-icon">⚽</div><b>{title}</b>{text&&<span>{text}</span>}</div>}
 function Modal({title,onClose,children}){
  useEffect(()=>{
@@ -36,6 +36,6 @@ function StatusBadge({status}){
 function EmptyState({icon:Icon=Info,title='No data yet',text='',action}){
  return <div className="empty-state-v2"><div className="empty-state-icon"><Icon/></div><b>{title}</b>{text&&<p>{text}</p>}{action}</div>
 }
-function LoadingState({label='Loading Bason Turf City…'}){return <div className="loading-state-v2"><div className="loading-ring"></div><span>{label}</span></div>}
+function LoadingState({label='Loading Konabari Turf…'}){return <div className="loading-state-v2"><div className="loading-ring"></div><span>{label}</span></div>}
 
 export { Loading, Empty, Modal, PendingPill, AdminPageHeader, StatCard, SectionCard, StatusBadge, EmptyState, LoadingState };
