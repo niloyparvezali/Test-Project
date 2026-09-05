@@ -177,7 +177,8 @@ function BookingRequestCard({
   canAccept = true,
   canReject = true,
 }) {
-  const hasActions = canReject || canAccept;
+  const isPending = booking.status === 'pending_payment_verification';
+  const hasActions = isPending && (canReject || canAccept);
 
   return (
     <article className="request-card-v3">

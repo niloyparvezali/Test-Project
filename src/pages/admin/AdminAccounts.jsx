@@ -1,13 +1,52 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { UserPlus, Trash2, ShieldCheck, LockKeyhole, Pencil, Crown, CheckCircle2 } from 'lucide-react';
-import { sendPasswordResetEmail } from 'firebase/auth';
+import { createUserWithEmailAndPassword, deleteUser, getAuth, sendPasswordResetEmail, signOut } from 'firebase/auth';
+import { getApps, initializeApp } from 'firebase/app';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db } from '../../firebase';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions } from '../../firebaseFunctions';
+import { collection, doc, getFirestore, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { AdminPageHeader, SectionCard, Modal, LoadingState } from '../../components/ui';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { ADMIN_PERMISSION_GROUPS, normalizeAdminPermissions } from '../../config/adminPermissions';
+
+
+// Spark-compatible Admin account creation.
+// Firebase Auth supports client-side email/password account creation on Spark.
+// A secondary Firebase App keeps the new account creation isolated from the
+// currently signed-in Admin, so creating an Admin does not sign the current
+// Admin out.
+const ADMIN_CREATOR_APP_NAME = 'admin-account-creator';
+
+function getAdminCreatorApp() {
+  const existing = getApps().find(app => app.name === ADMIN_CREATOR_APP_NAME);
+  return existing || initializeApp({
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  }, ADMIN_CREATOR_APP_NAME);
+}
+
+function getAdminCreatorAuth() {
+  return getAuth(getAdminCreatorApp());
+}
+
+function getAdminCreatorDb() {
+  return getFirestore(getAdminCreatorApp());
+}
+
+function normalizeCreateAdminError(error) {
+  const code = String(error?.code || '');
+  if (code === 'auth/email-already-in-use') return 'An account with this email already exists.';
+  if (code === 'auth/invalid-email') return 'Please enter a valid email address.';
+  if (code === 'auth/weak-password') return 'Password must be at least 6 characters.';
+  if (code === 'permission-denied' || code === 'firestore/permission-denied') {
+    return 'Only Full Admin can create Admin accounts.';
+  }
+  return error?.message || 'Could not create the Admin account.';
+}
 
 function useAdminAccounts(enabled) {
   const [admins, setAdmins] = useState([]);
@@ -172,17 +211,87 @@ function CreateAdminModal({ onClose, onCreated }) {
   };
   const create = async () => {
     setBusy(true); setErr('');
+    let creatorAuth = null;
+    let createdAuthUser = null;
+
     try {
-      const fn = httpsCallable(functions, 'createAdminAccount');
-      await fn({ name: form.name.trim(), email: form.email.trim(), password: form.password, accessLevel: form.accessLevel, permissions: normalizeAdminPermissions(form.permissions) });
+      const name = form.name.trim();
+      const email = form.email.trim().toLowerCase();
+      const accessLevel = form.accessLevel === 'custom' ? 'custom' : 'full';
+      const permissions = accessLevel === 'custom'
+        ? normalizeAdminPermissions(form.permissions)
+        : {};
+
+      if (!name) throw new Error('Admin name is required.');
+      if (!email) throw new Error('Admin email is required.');
+
+      // Step 1: create a one-time Admin invitation with the currently
+      // authenticated Full Admin. This is the security bridge required on
+      // the Spark plan because the browser cannot create another user's
+      // Firebase Auth account through the Admin SDK.
+      const inviteRef = doc(db, 'adminInvites', email);
+      await setDoc(inviteRef, {
+        email,
+        name,
+        accessLevel,
+        permissions,
+        status: 'pending',
+        createdBy: auth.currentUser?.uid || '',
+        createdByEmail: auth.currentUser?.email || '',
+        createdAt: serverTimestamp(),
+      });
+
+      creatorAuth = getAdminCreatorAuth();
+
+      // Step 2: create the Firebase Authentication account in a secondary app
+      // so the current Full Admin session is not replaced.
+      const credential = await createUserWithEmailAndPassword(
+        creatorAuth,
+        email,
+        form.password
+      );
+      createdAuthUser = credential.user;
+
+      // Step 3: the newly-created Auth user claims the invitation. Firestore
+      // rules only permit this exact user/email to atomically create the Admin
+      // profile and mark the invitation as claimed.
+      const creatorDb = getAdminCreatorDb();
+      const batch = writeBatch(creatorDb);
+      batch.set(doc(creatorDb, 'users', createdAuthUser.uid), {
+        name,
+        email,
+        role: 'admin',
+        accessLevel,
+        permissions,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.update(doc(creatorDb, 'adminInvites', email), {
+        status: 'claimed',
+        claimedBy: createdAuthUser.uid,
+        claimedAt: serverTimestamp(),
+      });
+      await batch.commit();
+
+      await signOut(creatorAuth);
+      setConfirmFull(false);
       onCreated();
     } catch (x) {
+      try {
+        if (creatorAuth?.currentUser) await signOut(creatorAuth);
+      } catch (_) {}
+
+      // If Auth creation succeeded but the atomic Firestore claim failed,
+      // remove the just-created Auth account to avoid an orphaned account.
+      try {
+        if (createdAuthUser) await deleteUser(createdAuthUser);
+      } catch (_) {}
+
       setConfirmFull(false);
-      if (x?.code === 'functions/already-exists') setErr('An account with this email already exists.');
-      else if (x?.code === 'functions/invalid-argument') setErr(x?.message || 'Please check the Admin details.');
-      else if (x?.code === 'functions/permission-denied') setErr('Only Full Admin can create Admin accounts.');
-      else setErr(x?.message || 'Could not create the Admin account.');
-    } finally { setBusy(false); }
+      setErr(normalizeCreateAdminError(x));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -236,11 +345,19 @@ function AccessModal({ admin, onClose, onSaved }) {
   const save = async () => {
     setBusy(true); setErr('');
     try {
-      const fn = httpsCallable(functions, 'updateAdminAccess');
-      await fn({ targetUid: admin.uid, accessLevel: level, permissions: level === 'full' ? {} : normalizeAdminPermissions(permissions) });
+      await updateDoc(doc(db, 'users', admin.uid), {
+        accessLevel: level,
+        permissions: level === 'full' ? {} : normalizeAdminPermissions(permissions),
+        updatedAt: serverTimestamp(),
+      });
       onSaved();
-    } catch (x) { setErr(x?.message || 'Could not update Admin access.'); }
-    finally { setBusy(false); }
+    } catch (x) {
+      setErr(
+        x?.code === 'permission-denied'
+          ? 'Only Full Admin can update Admin access.'
+          : (x?.message || 'Could not update Admin access.')
+      );
+    } finally { setBusy(false); }
   };
   return <Modal title="Edit Admin Access" onClose={() => { if (!busy) onClose(); }}>
     <div className="admin-form-premium">
@@ -298,24 +415,28 @@ export default function AdminAccounts({ user }) {
     if (deleteBusy) return;
     const targetName = target.name || target.email || 'this Admin';
     if (sortedAdmins.length <= 1) { setMessage('You cannot delete the last remaining Admin account.'); return; }
-    if (!window.confirm(`Delete Admin?\n\n${targetName}\n${target.email || ''}\n\nThis account will be permanently removed.`)) return;
+    if (!window.confirm(`Delete Admin?\n\n${targetName}\n${target.email || ''}\n\nThe Admin profile and Firebase Authentication account will be deleted. Booking history, payment records and activity history will be preserved.`)) return;
     setDeleteBusy(true); setMessage('');
     try {
-      const fn = httpsCallable(functions, 'deleteAdminAccount');
-      await fn({ targetUid: target.uid });
-      setMessage(`${targetName} was deleted successfully.`);
+      await httpsCallable(functions, 'deleteAdminAccount')({ targetUid: target.uid });
+
+      setMessage(`${targetName} was removed from Admin access.`);
       refresh();
       if (target.uid === user?.uid) { await auth.signOut(); }
     } catch (e) {
-      setMessage(e?.code === 'functions/failed-precondition' ? 'You cannot delete the last remaining Admin account.' : (e?.message || 'Could not delete the Admin account.'));
+      setMessage(
+        e?.code === 'permission-denied'
+          ? 'Only Full Admin can remove Admin access.'
+          : (e?.message || 'Could not remove Admin access.')
+      );
     } finally { setDeleteBusy(false); }
   };
 
   return <div className="admin-accounts-premium">
-    <AdminPageHeader eyebrow="ADMIN / ACCOUNT" title="Manage Admins" subtitle="Full Admins can delegate and manage Admin access." actions={<button className="primary" type="button" onClick={() => { setMessage(''); setModal('create'); }}><UserPlus/> Create Admin</button>}/>
+    <AdminPageHeader eyebrow="ADMIN / ACCOUNT" title="Manage Admins" subtitle="Full Admins can create, change and remove Admin access." actions={<button className="primary" type="button" onClick={() => { setMessage(''); setModal('create'); }}><UserPlus/> Create Admin</button>}/>
     {message && <div className="admin-premium-feedback" role="status">{message}</div>}
 
-    <SectionCard eyebrow="ADMIN DIRECTORY" title={`${sortedAdmins.length} administrator${sortedAdmins.length === 1 ? '' : 's'}`} subtitle="Authority is enforced server-side. Custom Admins never gain Admin-management authority.">
+    <SectionCard eyebrow="ADMIN DIRECTORY" title={`${sortedAdmins.length} administrator${sortedAdmins.length === 1 ? '' : 's'}`} subtitle="Admin authority is enforced by Firestore rules. Custom Admins never gain Admin-management authority.">
       <div className="admin-premium-directory">
         {sortedAdmins.map(admin => {
           const self = admin.uid === user?.uid;
@@ -328,7 +449,7 @@ export default function AdminAccounts({ user }) {
             <PermissionSummary admin={admin}/>
             <div className="admin-premium-card-actions">
               <button className="secondary" type="button" onClick={() => setModal({ type: 'access', admin })}><Pencil/> Manage Access</button>
-              <button className="danger-btn" type="button" onClick={() => deleteAdmin(admin)} disabled={deleteBusy || sortedAdmins.length <= 1}><Trash2/> Delete</button>
+              <button className="danger-btn" type="button" onClick={() => deleteAdmin(admin)} disabled={deleteBusy || sortedAdmins.length <= 1}><Trash2/> Remove Admin</button>
             </div>
           </article>;
         })}
@@ -339,7 +460,7 @@ export default function AdminAccounts({ user }) {
       <div className="admin-premium-account-row"><div className="admin-premium-account-copy"><b>{auth.currentUser?.email || user?.email || 'Administrator'}</b><span>Your signed-in administrator account</span></div><button className="secondary" type="button" onClick={() => setModal('password')}><LockKeyhole/> Change Password</button></div>
     </SectionCard>
 
-    <div className="admin-premium-security-note"><ShieldCheck/><span>Full Admin is the highest authority. Admin-management actions remain protected by the backend.</span></div>
+    <div className="admin-premium-security-note"><ShieldCheck/><span>Full Admin is the highest authority. Admin-management actions are protected by Firestore rules.</span></div>
 
     {modal === 'create' && <CreateAdminModal onClose={() => setModal(null)} onCreated={() => { setModal(null); setMessage('Admin account created successfully.'); refresh(); }}/>}    
     {modal?.type === 'access' && <AccessModal admin={modal.admin} onClose={() => setModal(null)} onSaved={() => { setModal(null); setMessage('Admin access updated successfully.'); refresh(); }}/>}    

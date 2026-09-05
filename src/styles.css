@@ -15780,6 +15780,7 @@ td small {
 }
 .admin-app-v3 .collection-operational-banner strong { font-size: 1rem; }
 .admin-app-v3 .collection-operational-banner > span { color: var(--ad-muted); font-size: .86rem; }
+.admin-app-v3 .collection-search { margin: 0 0 18px; }
 .admin-app-v3 .collection-kicker,
 .admin-app-v3 .collection-section-title {
   font-size: .72rem;

@@ -18,6 +18,14 @@ function slotStartMs(booking) {
   );
 }
 
+function slotEndMs(booking) {
+  return zonedSlotStartMs(
+    booking?.slotEndDate || booking?.slotStartDate || bookingDate(booking),
+    booking?.slotEnd,
+    TZ
+  );
+}
+
 function isRetained(booking, nowMs) {
   const start = slotStartMs(booking);
   if (!start) return false;
@@ -27,7 +35,8 @@ function isRetained(booking, nowMs) {
 
 function isUpcoming(booking, nowMs) {
   const start = slotStartMs(booking);
-  return start > nowMs;
+  const end = slotEndMs(booking);
+  return end ? end > nowMs : start > nowMs;
 }
 
 function paymentValues(booking) {

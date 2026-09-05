@@ -23,9 +23,9 @@ function RequestReject({ booking, onClose, onConfirm, busy }) {
         <label className="form-label">Reason
           <select value={reason} onChange={(e) => setReason(e.target.value)}>
             <option value="">Select reason</option>
-            <option value="We Didnt get the payment">We Didnt get the payment</option>
-            <option value="Transection not match">Transection not match</option>
-            <option value="slot is already booked">slot is already booked</option>
+            <option value="We didn't receive the payment">We didn't receive the payment</option>
+            <option value="Transaction ID does not match">Transaction ID does not match</option>
+            <option value="Slot is already booked">Slot is already booked</option>
           </select>
         </label>
       </div>
@@ -146,8 +146,8 @@ export default function AdminRequests() {
       <section className="online-request-summary">
         <div className="online-request-summary-icon"><ListFilter /></div>
         <div>
-          <strong>{pending.length} customer request{pending.length === 1 ? '' : 's'} waiting</strong>
-          <p>These requests need payment verification before booking confirmation.</p>
+          <strong>{filter === 'pending' ? `${pending.length} customer request${pending.length === 1 ? '' : 's'} waiting` : `${visible.length} ${filters.find(([id]) => id === filter)?.[1].toLowerCase() || 'request'}${visible.length === 1 ? '' : 's'}`}</strong>
+          <p>{filter === 'pending' ? 'These requests need payment verification before booking confirmation.' : 'Only pending requests can be accepted or rejected.'}</p>
         </div>
       </section>
 

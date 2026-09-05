@@ -12,57 +12,93 @@ import { getCurrentAdminActor, logAdminActivity } from './adminActivityService';
 const money = n => `৳${Number(n||0).toLocaleString('en-BD',{maximumFractionDigits:3})}`;
 
 async function createBookingClient(slot, form, turf = {}) {
-    const settings = (await getDoc(doc(db, 'settings/config'))).data() || {};
-    const pricing = (await getDoc(doc(db, 'pricing/current'))).data() || {};
-    const duration = Number(settings.slotDuration || slot.duration);
-    if (![60, 90].includes(duration)) throw new Error('Slot duration is not configured.');
-    const start = String(slot.start);
-    const end = addM(start, duration);
-    const shift = String(slot.shift);
-    const price = slotPriceFromPricing({ duration, shift, start }, pricing, settings);
-    if (price <= 0) throw new Error('This slot does not have a configured price.');
-    const requiredAdvance = requiredAdvanceFromSettings(price, settings);
-    if (!Number.isFinite(requiredAdvance) || requiredAdvance < 0) throw new Error('Advance payment is not configured correctly.');
-    const customerName = String(form.customerName || '').trim(),
-        phone = String(form.phone || '').trim();
+    const customerName = String(form?.customerName || '').trim();
+    const phone = String(form?.phone || '').trim();
+    const paymentMethod = String(form?.paymentMethod || '').trim();
+    const sendMoneyNumber = String(form?.sendMoneyNumber || '').trim();
+    const transactionId = String(form?.transactionId || '').trim();
+
     if (customerName.length < 2) throw new Error('Please enter your name.');
     if (phone.length < 5) throw new Error('Please enter a valid phone number.');
-    const paymentMethod = String(form.paymentMethod || '').trim();
     if (!['bKash', 'Nagad', 'Rocket'].includes(paymentMethod)) throw new Error('Please select a payment method.');
-    const receiverMap = { bKash: turf.bkashNumber, Nagad: turf.nagadNumber, Rocket: turf.rocketNumber };
+    if (sendMoneyNumber.length < 5) throw new Error('Please enter your send money number.');
+    if (transactionId.length < 5) throw new Error('Please enter your transaction ID.');
+
+    const [settingsSnap, pricingSnap, turfSnap] = await Promise.all([
+        getDoc(doc(db, 'settings', 'config')),
+        getDoc(doc(db, 'pricing', 'current')),
+        getDoc(doc(db, 'turf', 'main'))
+    ]);
+
+    const settings = settingsSnap.exists() ? settingsSnap.data() : {};
+    const pricing = pricingSnap.exists() ? pricingSnap.data() : {};
+    const turfData = turfSnap.exists() ? turfSnap.data() : turf || {};
+    const requestedKey = String(slot?.key || '').trim();
+    const date = String(slot?.date || '').trim();
+    const start = String(slot?.start || '').trim();
+    const duration = Number(slot?.duration || settings?.slotDuration);
+
+    const validSlots = generateSlots(date, settings);
+    const selected = validSlots.find(s => s.key === requestedKey && s.start === start && Number(s.duration) === duration);
+    if (!selected) throw new Error('This slot is no longer valid. Please select it again.');
+
+    const price = Number(slotPriceFromPricing(selected, pricing, settings) || 0);
+    if (price <= 0) throw new Error('This slot does not have a configured price.');
+
+    const requiredAdvance = Number(requiredAdvanceFromSettings(price, settings) || 0);
+    if (requiredAdvance <= 0) throw new Error('The required booking advance is not configured.');
+
+    const receiverMap = {
+        bKash: turfData?.bkashNumber,
+        Nagad: turfData?.nagadNumber,
+        Rocket: turfData?.rocketNumber
+    };
     const receiverNumber = String(receiverMap[paymentMethod] || '').trim();
     if (!receiverNumber) throw new Error(`${paymentMethod} payment number is not configured.`);
-    const sendMoneyNumber = String(form.sendMoneyNumber || '').trim();
-    if (sendMoneyNumber.length < 5) throw new Error('Please enter your send money number.');
-    const transactionId = String(form.transactionId || '').trim();
-    if (transactionId.length < 5) throw new Error('Please enter your transaction ID.');
-    const paymentAmount = Math.round(requiredAdvance * 1000) / 1000;
-    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) throw new Error('The required booking advance is not available for this slot.');
-    const remainingAmount = Math.round((price - paymentAmount) * 1000) / 1000;
-    const slotKey = `${slot.date}_${start.replace(':','')}_${duration}`;
-    const lockRef = doc(db, 'slotLocks', slotKey);
+
     const bookingRef = doc(collection(db, 'bookings'));
+    const lockRef = doc(db, 'slotLocks', selected.key);
+    const endDate = selected.endDate || selected.date;
+    const now = serverTimestamp();
+    const remainingAmount = price - requiredAdvance;
+
     await runTransaction(db, async tx => {
-        const lock = await tx.get(lockRef);
-        if (lock.exists()) {
-            const data = lock.data();
-            if (data.status === 'booked' || data.status === 'pending_payment_verification') throw new Error('That slot is no longer available. Please choose another slot.');
+        const lockSnap = await tx.get(lockRef);
+        if (lockSnap.exists()) {
+            const status = lockSnap.data()?.status;
+            if (status === 'booked' || status === 'pending_payment_verification') {
+                throw new Error('That slot is no longer available. Please choose another slot.');
+            }
         }
-        const now = serverTimestamp();
-        tx.set(lockRef, { status: 'pending_payment_verification', slotKey, sessionDate: slot.date, slotStart: start, slotEnd: end, slotStartDate: slot.startDate, slotEndDate: slot.endDate, slotStartDateTime: slot.startDateTime, slotEndDateTime: slot.endDateTime, duration, shift, expiresAt: null });
+
+        tx.set(lockRef, {
+            status: 'pending_payment_verification',
+            slotKey: selected.key,
+            sessionDate: selected.date,
+            slotStart: selected.start,
+            slotEnd: selected.end,
+            slotStartDate: selected.startDate,
+            slotEndDate: endDate,
+            slotStartDateTime: selected.startDateTime,
+            slotEndDateTime: selected.endDateTime,
+            duration: selected.duration,
+            shift: selected.shift,
+            expiresAt: null
+        });
+
         tx.set(bookingRef, {
             customerName,
             phone,
-            date: slot.date,
-            sessionDate: slot.date,
-            slotStart: start,
-            slotEnd: end,
-            slotStartDate: slot.startDate,
-            slotEndDate: slot.endDate,
-            slotStartDateTime: slot.startDateTime,
-            slotEndDateTime: slot.endDateTime,
-            duration,
-            shift,
+            date: selected.date,
+            sessionDate: selected.date,
+            slotStart: selected.start,
+            slotEnd: selected.end,
+            slotStartDate: selected.startDate,
+            slotEndDate: endDate,
+            slotStartDateTime: selected.startDateTime,
+            slotEndDateTime: selected.endDateTime,
+            duration: selected.duration,
+            shift: selected.shift,
             slotPrice: price,
             totalAmount: price,
             paidAmount: 0,
@@ -73,9 +109,9 @@ async function createBookingClient(slot, form, turf = {}) {
             receiverNumberSnapshot: receiverNumber,
             sendMoneyNumber,
             transactionId,
-            paymentAmount,
+            paymentAmount: requiredAdvance,
             status: 'pending_payment_verification',
-            slotKey,
+            slotKey: selected.key,
             createdBy: 'public',
             bookingType: 'public_payment_request',
             createdAt: now,
@@ -84,137 +120,125 @@ async function createBookingClient(slot, form, turf = {}) {
             verificationStatus: 'pending'
         });
     });
-    return { bookingId: bookingRef.id, slotEnd: end, slotPrice: price, advanceAmount: requiredAdvance, remainingAmount, transactionId, status: 'pending_payment_verification', paymentMethod, paymentAmount };
+
+    return {
+        bookingId: bookingRef.id,
+        slotEnd: selected.end,
+        slotPrice: price,
+        advanceAmount: requiredAdvance,
+        remainingAmount,
+        transactionId,
+        status: 'pending_payment_verification',
+        paymentMethod,
+        paymentAmount: requiredAdvance
+    };
 }
 
 async function confirmBookingClient(booking) {
-    if (!auth.currentUser) throw new Error('Admin session expired. Please sign in again.');
-    const txnId = String((booking && booking.transactionId) || '').trim();
-    if (!txnId) throw new Error('This request has no transaction ID.');
-    const currentBookingId = String(booking?.id || '').trim();
-    const bookingRef = doc(db, 'bookings', booking.id);
-    const lockRef = doc(db, 'slotLocks', booking.slotKey);
-    const paymentRef = doc(db, 'payments', `txn_${encodeURIComponent(txnId).slice(0,300)}`);
-    const txRef = doc(db, 'transactions', `txn_${encodeURIComponent(txnId).slice(0,300)}`);
     const actor = await getCurrentAdminActor();
+    const bookingId = String(booking?.id || '').trim();
+    if (!bookingId) throw new Error('Booking request is required.');
+
+    const bookingRef = doc(db, 'bookings', bookingId);
+    let accepted = null;
+
     await runTransaction(db, async tx => {
-        const snap = await tx.get(bookingRef);
-        if (!snap.exists()) throw new Error('Booking request no longer exists.');
-        const b = snap.data();
-        if (b.status !== 'pending_payment_verification') throw new Error(`This request is already ${b.status||'handled'}.`);
-        const lock = await tx.get(lockRef);
-        if (!lock.exists() || lock.data().status !== 'pending_payment_verification') throw new Error('The slot lock is no longer active.');
-        const paymentCheck = await tx.get(paymentRef);
-        if (paymentCheck.exists()) {
-            const existingPayment = paymentCheck.data() || {};
-            const existingBookingId = String(existingPayment.bookingId || '').trim();
-            if (existingBookingId !== booking.id) {
-                throw new Error('Transaction ID already used by another confirmed payment.');
-            }
+        const bookingSnap = await tx.get(bookingRef);
+        if (!bookingSnap.exists()) throw new Error('Booking request no longer exists.');
+        const b = bookingSnap.data() || {};
+        if (b.status !== 'pending_payment_verification') throw new Error(`This request is already ${b.status || 'handled'}.`);
+
+        const slotKey = String(b.slotKey || '').trim();
+        const txnId = String(b.transactionId || '').trim();
+        if (!slotKey || !txnId) throw new Error('The booking request is missing slot or transaction information.');
+
+        const lockRef = doc(db, 'slotLocks', slotKey);
+        const paymentRef = doc(db, 'payments', `txn_${encodeURIComponent(txnId).slice(0, 300)}`);
+        const transactionRef = doc(db, 'transactions', `txn_${encodeURIComponent(txnId).slice(0, 300)}`);
+        const activityRef = doc(collection(db, 'adminActivity'));
+        const lockSnap = await tx.get(lockRef);
+        if (!lockSnap.exists() || lockSnap.data()?.status !== 'pending_payment_verification') throw new Error('The slot lock is no longer active.');
+        const paymentSnap = await tx.get(paymentRef);
+        if (paymentSnap.exists()) {
+            const existingBookingId = String(paymentSnap.data()?.bookingId || '');
+            if (existingBookingId !== bookingId) throw new Error('Transaction ID already used by another confirmed payment.');
+            throw new Error('This payment has already been recorded.');
         }
-        const amount = Math.round(Number(b.paymentAmount || b.advanceAmount || 0) * 1000) / 1000;
+
+        const amount = Number(b.paymentAmount || b.advanceAmount || 0);
         const total = Number(b.totalAmount || b.slotPrice || 0);
         const required = Number(b.advanceAmount || 0);
-        if (!Number.isFinite(amount) || amount <= 0 || amount < required) throw new Error(`Payment amount is below the required advance of ${money(required)}.`);
-        if (amount > total) throw new Error('Payment amount cannot exceed the total booking amount.');
+        if (!Number.isFinite(amount) || amount <= 0 || amount < required || amount > total) throw new Error('The submitted payment amount is not valid for this booking.');
+
         const now = serverTimestamp();
+        const actorName = actor.actorName || actor.actorEmail || 'Administrator';
+        const actorEmail = actor.actorEmail || auth.currentUser?.email || '';
         tx.update(bookingRef, {
-            status: 'confirmed',
-            paidAmount: amount,
-            remainingAmount: total - amount,
-            dueAmount: total - amount,
-            updatedAt: now,
-            reviewedAt: now,
-            verificationStatus: 'accepted',
-            confirmedAt: now,
-            expiresAt: null,
-            confirmedBy: actor.actorUid,
-            confirmedByEmail: actor.actorEmail,
-            confirmedByName: actor.actorName
+            status: 'confirmed', paidAmount: amount, remainingAmount: total - amount, dueAmount: total - amount,
+            updatedAt: now, reviewedAt: now, verificationStatus: 'accepted', confirmedAt: now, expiresAt: null,
+            confirmedBy: actor.actorUid, confirmedByEmail: actorEmail, confirmedByName: actorName
         });
-        tx.set(lockRef, {...lock.data(), status: 'booked', expiresAt: null, updatedAt: now });
+        tx.update(lockRef, { status: 'booked', expiresAt: null, updatedAt: now });
         tx.set(paymentRef, {
-            bookingId: booking.id,
-            amount,
-            paymentMethod: String(b.paymentMethod || 'Other'),
-            
-            note: 'Public booking payment',
-            transactionId: txnId,
-            createdAt: now,
-            createdBy: auth.currentUser.uid
+            bookingId, amount, paymentMethod: String(b.paymentMethod || 'Other'), note: 'Public booking payment',
+            transactionId: txnId, createdAt: now, createdBy: actor.actorUid,
+            actor: { uid: actor.actorUid, email: actorEmail, name: actorName }
         });
-        tx.set(txRef, {
-            type: 'income',
-            amount,
-            category: 'Booking payment',
-            referenceId: booking.id,
-            description: `Payment for booking ${booking.id}`,
-            
-            transactionId: txnId,
-            createdAt: now,
-            createdBy: auth.currentUser.uid
+        tx.set(transactionRef, {
+            type: 'income', amount, category: 'Booking payment', referenceId: bookingId,
+            description: `Payment for booking ${bookingId}`, transactionId: txnId, createdAt: now,
+            createdBy: actor.actorUid, actorUid: actor.actorUid, actorEmail, actorName,
+            paymentMethod: String(b.paymentMethod || 'Other')
         });
+        tx.set(activityRef, {
+            actorUid: actor.actorUid, actorEmail, actorName, action: 'booking_confirmed',
+            targetType: 'booking', targetId: bookingId,
+            description: `${actorName} accepted the booking request for ${b.customerName || 'Customer'}`,
+            metadata: { customerName: b.customerName || '', sessionDate: b.sessionDate || b.date || '', slotStart: b.slotStart || '', slotEnd: b.slotEnd || '' },
+            createdAt: now
+        });
+        accepted = { bookingId, amount };
     });
-    await logAdminActivity({
-        action: 'booking_confirmed',
-        targetType: 'booking',
-        targetId: booking.id,
-        description: `${actor.actorName} accepted the booking request for ${booking.customerName || 'Customer'}`,
-        metadata: { customerName: booking.customerName || '', sessionDate: booking.sessionDate || booking.date || '', slotStart: booking.slotStart || '', slotEnd: booking.slotEnd || '' }
-    });
+
+    return accepted;
 }
 
 async function rejectBookingClient(booking, reason = '') {
     const actor = await getCurrentAdminActor();
-    const bookingRef = doc(db, 'bookings', booking.id);
-    const lockRef = booking.slotKey ? doc(db, 'slotLocks', booking.slotKey) : null;
+    const bookingId = String(booking?.id || '').trim();
+    const cleanReason = String(reason || '').trim();
+    if (!bookingId) throw new Error('Booking request is required.');
+    if (!cleanReason) throw new Error('A rejection reason is required.');
+
+    const bookingRef = doc(db, 'bookings', bookingId);
     await runTransaction(db, async tx => {
-        const snap = await tx.get(bookingRef);
-        if (!snap.exists()) throw new Error('Booking request no longer exists.');
-        const b = snap.data();
-        if (b.status !== 'pending_payment_verification') throw new Error(`This request is already ${b.status||'handled'}.`);
+        const bookingSnap = await tx.get(bookingRef);
+        if (!bookingSnap.exists()) throw new Error('Booking request no longer exists.');
+        const b = bookingSnap.data() || {};
+        if (b.status !== 'pending_payment_verification') throw new Error(`This request is already ${b.status || 'handled'}.`);
+
         const now = serverTimestamp();
+        const actorName = actor.actorName || actor.actorEmail || 'Administrator';
+        const actorEmail = actor.actorEmail || auth.currentUser?.email || '';
+        const activityRef = doc(collection(db, 'adminActivity'));
         tx.update(bookingRef, {
-            status: 'rejected',
-            verificationStatus: 'rejected',
-            rejectionReason: String(reason || '').trim(),
-            reviewedAt: now,
-            updatedAt: now,
-            rejectedBy: actor.actorUid,
-            rejectedByEmail: actor.actorEmail,
-            rejectedByName: actor.actorName
+            status: 'rejected', verificationStatus: 'rejected', rejectionReason: cleanReason,
+            reviewedAt: now, updatedAt: now, rejectedBy: actor.actorUid,
+            rejectedByEmail: actorEmail, rejectedByName: actorName
         });
-        if (lockRef) tx.delete(lockRef);
-    });
-    await logAdminActivity({
-        action: 'booking_rejected',
-        targetType: 'booking',
-        targetId: booking.id,
-        description: `${actor.actorName} rejected the booking request for ${booking.customerName || 'Customer'}`,
-        metadata: {
-            customerName: booking.customerName || '',
-            sessionDate: booking.sessionDate || booking.date || '',
-            slotStart: booking.slotStart || '',
-            slotEnd: booking.slotEnd || '',
-            reason: String(reason || '').trim()
-        }
+        if (b.slotKey) tx.delete(doc(db, 'slotLocks', String(b.slotKey)));
+        tx.set(activityRef, {
+            actorUid: actor.actorUid, actorEmail, actorName, action: 'booking_rejected',
+            targetType: 'booking', targetId: bookingId,
+            description: `${actorName} rejected the booking request for ${b.customerName || 'Customer'}`,
+            metadata: { customerName: b.customerName || '', sessionDate: b.sessionDate || b.date || '', slotStart: b.slotStart || '', slotEnd: b.slotEnd || '', reason: cleanReason },
+            createdAt: now
+        });
     });
 }
 
-
 async function createManualBookingClient({ slot, customerName, phone, adminNote, advanceAmount }) {
     const actor = await getCurrentAdminActor();
-    const date = String((slot && slot.date) || '');
-    const start = String((slot && slot.start) || '');
-    const duration = Number(slot && slot.duration);
-    if (!validDateInput(date) || !start || ![60, 90].includes(duration)) throw new Error('A valid slot must be selected.');
-    const turf = (await getDoc(doc(db, 'turf/main'))).data() || {};
-    const settings = (await getDoc(doc(db, 'settings/config'))).data() || {};
-    const pricing = (await getDoc(doc(db, 'pricing/current'))).data() || {};
-    const generated = generateSlots(date, settings).find(s => s.key === slot.key);
-    if (!generated) throw new Error('This slot is no longer part of the current operating schedule.');
-    const price = slotPriceFromPricing(generated, pricing, settings);
-    if (price <= 0) throw new Error('Pricing is not configured for this slot.');
     const cleanName = String(customerName || '').trim();
     const cleanPhone = String(phone || '').trim();
     const cleanNote = String(adminNote || '').trim();
@@ -222,36 +246,65 @@ async function createManualBookingClient({ slot, customerName, phone, adminNote,
     if (cleanName.length < 2) throw new Error('Customer or booking name is required.');
     if (cleanNote.length < 2) throw new Error('Admin note is required.');
     if (!Number.isFinite(advance) || advance < 0) throw new Error('Advance payment must be a valid non-negative amount.');
+
+    const [settingsSnap, pricingSnap] = await Promise.all([
+        getDoc(doc(db, 'settings', 'config')),
+        getDoc(doc(db, 'pricing', 'current'))
+    ]);
+    const settings = settingsSnap.exists() ? settingsSnap.data() : {};
+    const pricing = pricingSnap.exists() ? pricingSnap.data() : {};
+    const date = String(slot?.date || '').trim();
+    const requestedKey = String(slot?.key || '').trim();
+    const duration = Number(slot?.duration || settings?.slotDuration);
+    const validSlots = generateSlots(date, settings);
+    const selected = validSlots.find(s => s.key === requestedKey && Number(s.duration) === duration);
+    if (!selected) throw new Error('This slot is no longer valid. Please select it again.');
+
+    const price = Number(slotPriceFromPricing(selected, pricing, settings) || 0);
+    if (price <= 0) throw new Error('Pricing is not configured for this slot.');
     if (advance > price) throw new Error('Advance cannot be greater than the total amount.');
-    const requiredAdvance = requiredAdvanceFromSettings(price, settings);
-    const end = generated.end;
-    const slotKey = generated.key;
-    const lockRef = doc(db, 'slotLocks', slotKey),
-        bookingRef = doc(collection(db, 'bookings'));
-    const notePrefix = `${displayDate(date,{day:'2-digit',month:'short',year:'numeric'})} · ${timeLabel(generated.start)}–${timeLabel(generated.end)}`;
-    const fullNote = `${notePrefix} · ${cleanNote}`;
+
+    const bookingRef = doc(collection(db, 'bookings'));
+    const lockRef = doc(db, 'slotLocks', selected.key);
+    const now = serverTimestamp();
+    const endDate = selected.endDate || selected.date;
+    const actorName = actor.actorName || actor.actorEmail || 'Administrator';
+    const actorEmail = actor.actorEmail || auth.currentUser?.email || '';
+
     await runTransaction(db, async tx => {
-        const lock = await tx.get(lockRef);
-        if (lock.exists()) {
-            const data = lock.data();
-            if (data.status === 'booked') throw new Error('That slot is already booked.');
-            if (data.status === 'pending_payment_verification') throw new Error('That slot is currently reserved by a payment request.');
+        const lockSnap = await tx.get(lockRef);
+        if (lockSnap.exists()) {
+            const status = lockSnap.data()?.status;
+            if (status === 'booked') throw new Error('That slot is already booked.');
+            if (status === 'pending_payment_verification') throw new Error('That slot is currently reserved by a payment request.');
         }
-        const now = serverTimestamp();
-        tx.set(lockRef, { status: 'booked', slotKey, sessionDate: date, slotStart: generated.start, slotEnd: end, slotStartDate: generated.startDate, slotEndDate: generated.endDate, slotStartDateTime: generated.startDateTime, slotEndDateTime: generated.endDateTime, duration, shift: generated.shift, expiresAt: null, updatedAt: now });
+
+        const fullNote = `${selected.date} · ${selected.start}–${selected.end} · ${cleanNote}`;
+        tx.set(lockRef, {
+            status: 'booked',
+            slotKey: selected.key,
+            sessionDate: selected.date,
+            slotStart: selected.start,
+            slotEnd: selected.end,
+            slotStartDate: selected.startDate,
+            slotEndDate: endDate,
+            slotStartDateTime: selected.startDateTime,
+            slotEndDateTime: selected.endDateTime,
+            duration: selected.duration,
+            shift: selected.shift,
+            expiresAt: null,
+            updatedAt: now
+        });
+
         tx.set(bookingRef, {
             customerName: cleanName,
             phone: cleanPhone,
-            date,
-            sessionDate: date,
-            slotStart: generated.start,
-            slotEnd: end,
-            slotStartDate: generated.startDate,
-            slotEndDate: generated.endDate,
-            slotStartDateTime: generated.startDateTime,
-            slotEndDateTime: generated.endDateTime,
-            duration,
-            shift: generated.shift,
+            date: selected.date,
+            sessionDate: selected.date,
+            slotStart: selected.start,
+            slotEnd: selected.end,
+            duration: selected.duration,
+            shift: selected.shift,
             slotPrice: price,
             totalAmount: price,
             paidAmount: advance,
@@ -264,23 +317,25 @@ async function createManualBookingClient({ slot, customerName, phone, adminNote,
             transactionId: '',
             paymentAmount: advance,
             status: 'confirmed',
-            slotKey,
-            createdBy: auth.currentUser.uid,
+            slotKey: selected.key,
+            createdBy: actor.actorUid,
             bookingType: 'manual_admin',
             bookingSource: 'admin',
             adminNote: fullNote,
             createdAt: now,
             updatedAt: now,
+            expiresAt: null,
             confirmedAt: now,
-            createdByEmail: actor.actorEmail,
-            createdByName: actor.actorName,
+            createdByEmail: actorEmail,
+            createdByName: actorName,
             confirmedBy: actor.actorUid,
-            confirmedByEmail: actor.actorEmail,
-            confirmedByName: actor.actorName
+            confirmedByEmail: actorEmail,
+            confirmedByName: actorName
         });
+
         if (advance > 0) {
             const paymentRef = doc(collection(db, 'payments'));
-            const txRef = doc(collection(db, 'transactions'));
+            const transactionRef = doc(collection(db, 'transactions'));
             tx.set(paymentRef, {
                 bookingId: bookingRef.id,
                 amount: advance,
@@ -288,30 +343,55 @@ async function createManualBookingClient({ slot, customerName, phone, adminNote,
                 note: 'Manual booking advance payment',
                 transactionId: '',
                 createdAt: now,
-                createdBy: auth.currentUser.uid
+                createdBy: actor.actorUid,
+                recordedByUid: actor.actorUid,
+                recordedByName: actorName,
+                recordedByEmail: actorEmail
             });
-            tx.set(txRef, {
+            tx.set(transactionRef, {
                 type: 'income',
                 amount: advance,
                 category: 'Booking payment',
                 referenceId: bookingRef.id,
                 description: `Advance payment for manual booking ${bookingRef.id}`,
-                date,
                 transactionId: '',
                 createdAt: now,
-                createdBy: auth.currentUser.uid
+                createdBy: actor.actorUid,
+                recordedByUid: actor.actorUid,
+                recordedByName: actorName,
+                recordedByEmail: actorEmail,
+                paymentMethod: 'Manual'
             });
         }
-    });
-    await logAdminActivity({
-        action: 'manual_booking_created',
-        targetType: 'booking',
-        targetId: bookingRef.id,
-        description: `${actor.actorName} created manual booking for ${cleanName}`,
-        metadata: { customerName: cleanName, sessionDate: date, slotStart: generated.start, slotEnd: end }
-    });
-}
 
+        const activityRef = doc(collection(db, 'adminActivity'));
+        tx.set(activityRef, {
+            actorUid: actor.actorUid,
+            actorEmail,
+            actorName,
+            action: 'manual_booking_created',
+            targetType: 'booking',
+            targetId: bookingRef.id,
+            description: `${actorName} created manual booking for ${cleanName}`,
+            metadata: {
+                customerName: cleanName,
+                sessionDate: selected.date,
+                slotStart: selected.start,
+                slotEnd: selected.end,
+                advance
+            },
+            createdAt: now
+        });
+    });
+
+    return {
+        bookingId: bookingRef.id,
+        slotKey: selected.key,
+        totalAmount: price,
+        paidAmount: advance,
+        dueAmount: price - advance
+    };
+}
 
 async function recordPaymentClient({ bookingId, amount, paymentMethod, note, transactionId }) {
     const actor = await getCurrentAdminActor();

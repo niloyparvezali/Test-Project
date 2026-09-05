@@ -115,6 +115,273 @@ async function writeAdminAudit({ actor, action, target, description, metadata = 
   return ref;
 }
 
+
+function callableError(err, fallback) {
+  if (err instanceof functions.https.HttpsError) return err;
+  functions.logger.error(fallback, err);
+  return new functions.https.HttpsError('internal', fallback);
+}
+
+function parseMoney(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : 0;
+}
+
+function minutes(value) {
+  const [h, m] = String(value || '').split(':').map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : NaN;
+}
+
+function addMinutes(time, amount) {
+  const total = (minutes(time) + amount) % 1440;
+  const safe = (total + 1440) % 1440;
+  return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function getServerSlotPrice(slot, pricing = {}, settings = {}) {
+  const duration = Number(slot.duration || settings.slotDuration);
+  const shift = slot.shift === 'night' ? 'night' : 'day';
+  const rules = pricing && pricing.rules && pricing.rules[String(duration)];
+  if (rules && rules[shift] != null) {
+    const direct = parseMoney(rules[shift]);
+    if (direct >= 0) return direct;
+  }
+  const rate = shift === 'night' ? pricing.nightRate : pricing.dayRate;
+  if (rate != null) {
+    const n = parseMoney(rate);
+    if (n >= 0) return n;
+  }
+  const start = minutes(slot.start);
+  const ranges = Array.isArray(pricing.timeRanges) ? pricing.timeRanges : [];
+  const range = ranges.find(x => x && Number(x.duration) === duration && start >= minutes(x.start) && start < minutes(x.end));
+  return range ? parseMoney(range.price) : 0;
+}
+
+function validateManualSlot(slot, settings) {
+  const duration = Number(slot?.duration || settings?.slotDuration);
+  if (![60, 90].includes(duration)) throw new functions.https.HttpsError('invalid-argument', 'Slot duration is not configured correctly.');
+  const date = String(slot?.date || slot?.sessionDate || '');
+  const start = String(slot?.start || '');
+  const key = String(slot?.key || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(start) || !key) {
+    throw new functions.https.HttpsError('invalid-argument', 'A valid slot must be selected.');
+  }
+  const open = String(settings.openingTime || '06:00');
+  const close = String(settings.closingTime || '04:00');
+  const opening = minutes(open);
+  const closingRaw = minutes(close);
+  const closeElapsed = closingRaw > opening ? closingRaw : closingRaw + 1440;
+  const startMinutes = minutes(start);
+  const elapsed = startMinutes >= opening ? startMinutes - opening : startMinutes + 1440 - opening;
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed + duration > closeElapsed - opening || ![60, 90].includes(duration)) {
+    throw new functions.https.HttpsError('failed-precondition', 'This slot is outside the current operating schedule.');
+  }
+  const end = addMinutes(start, duration);
+  const boundary = minutes(settings.dayBoundary || (duration === 60 ? '18:00' : '16:30'));
+  const boundaryAdjusted = boundary <= opening ? boundary + 1440 : boundary;
+  const startAdjusted = startMinutes < opening ? startMinutes + 1440 : startMinutes;
+  const shift = startAdjusted < boundaryAdjusted ? 'day' : 'night';
+  const expectedKey = `${date}_${start.replace(':', '')}_${duration}`;
+  if (key !== expectedKey) throw new functions.https.HttpsError('failed-precondition', 'This slot is no longer valid. Please select it again.');
+  return { date, start, end, duration, shift, key };
+}
+
+
+exports.createPublicBooking = functions.region('us-central1').https.onCall(async (data, context) => {
+  // Public booking intentionally does not require Firebase Authentication.
+  // All pricing, payment receiver, slot and lock validation is authoritative here.
+  const customerName = String(data?.customerName || '').trim();
+  const phone = String(data?.phone || '').trim();
+  const paymentMethod = String(data?.paymentMethod || '').trim();
+  const sendMoneyNumber = String(data?.sendMoneyNumber || '').trim();
+  const transactionId = String(data?.transactionId || '').trim();
+  if (customerName.length < 2) throw new functions.https.HttpsError('invalid-argument', 'Please enter your name.');
+  if (phone.length < 5) throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid phone number.');
+  if (!['bKash', 'Nagad', 'Rocket'].includes(paymentMethod)) throw new functions.https.HttpsError('invalid-argument', 'Please select a payment method.');
+  if (sendMoneyNumber.length < 5) throw new functions.https.HttpsError('invalid-argument', 'Please enter your send money number.');
+  if (transactionId.length < 5) throw new functions.https.HttpsError('invalid-argument', 'Please enter your transaction ID.');
+  try {
+    const [settingsSnap, pricingSnap, turfSnap] = await Promise.all([
+      db.doc('settings/config').get(), db.doc('pricing/current').get(), db.doc('turf/main').get()
+    ]);
+    const settings = settingsSnap.data() || {};
+    const pricing = pricingSnap.data() || {};
+    const turf = turfSnap.data() || {};
+    const slot = validateManualSlot(data?.slot, settings);
+    const price = getServerSlotPrice(slot, pricing, settings);
+    if (price <= 0) throw new functions.https.HttpsError('failed-precondition', 'This slot does not have a configured price.');
+    const advanceType = settings.advanceType === 'fixed' ? 'fixed' : 'percentage';
+    const advanceValue = Number(settings.advanceValue != null ? settings.advanceValue : advanceType === 'fixed' ? 0 : 30);
+    const requiredAdvance = advanceType === 'fixed'
+      ? Math.min(price, Math.max(0, parseMoney(advanceValue)))
+      : Math.min(price, Math.max(0, Math.round((price * advanceValue / 100) * 1000) / 1000));
+    if (!Number.isFinite(requiredAdvance) || requiredAdvance <= 0) throw new functions.https.HttpsError('failed-precondition', 'The required booking advance is not configured.');
+    const receiverMap = { bKash: turf.bkashNumber, Nagad: turf.nagadNumber, Rocket: turf.rocketNumber };
+    const receiverNumber = String(receiverMap[paymentMethod] || '').trim();
+    if (!receiverNumber) throw new functions.https.HttpsError('failed-precondition', `${paymentMethod} payment number is not configured.`);
+    const slotKey = slot.key;
+    const remainingAmount = price - requiredAdvance;
+    const lockRef = db.doc(`slotLocks/${slotKey}`);
+    const bookingRef = db.collection('bookings').doc();
+    await db.runTransaction(async tx => {
+      const lockSnap = await tx.get(lockRef);
+      if (lockSnap.exists) {
+        const status = lockSnap.data()?.status;
+        if (status === 'booked' || status === 'pending_payment_verification') throw new functions.https.HttpsError('already-exists', 'That slot is no longer available. Please choose another slot.');
+      }
+      const now = FieldValue.serverTimestamp();
+      tx.set(lockRef, {
+        status: 'pending_payment_verification', slotKey, sessionDate: slot.date, slotStart: slot.start, slotEnd: slot.end,
+        slotStartDate: slot.date, slotEndDate: minutes(slot.start) + slot.duration >= 1440 ? new Date(Date.parse(`${slot.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10) : slot.date,
+        slotStartDateTime: `${slot.date}T${slot.start}:00`,
+        slotEndDateTime: `${minutes(slot.start) + slot.duration >= 1440 ? new Date(Date.parse(`${slot.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10) : slot.date}T${slot.end}:00`,
+        duration: slot.duration, shift: slot.shift, expiresAt: null
+      });
+      tx.set(bookingRef, {
+        customerName, phone, date: slot.date, sessionDate: slot.date, slotStart: slot.start, slotEnd: slot.end,
+        slotStartDate: slot.date, slotEndDate: minutes(slot.start) + slot.duration >= 1440 ? new Date(Date.parse(`${slot.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10) : slot.date,
+        slotStartDateTime: `${slot.date}T${slot.start}:00`,
+        slotEndDateTime: `${minutes(slot.start) + slot.duration >= 1440 ? new Date(Date.parse(`${slot.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10) : slot.date}T${slot.end}:00`,
+        duration: slot.duration, shift: slot.shift, slotPrice: price, totalAmount: price, paidAmount: 0,
+        advanceAmount: requiredAdvance, remainingAmount, dueAmount: remainingAmount, paymentMethod,
+        receiverNumberSnapshot: receiverNumber, sendMoneyNumber, transactionId, paymentAmount: requiredAdvance,
+        status: 'pending_payment_verification', slotKey, createdBy: 'public', bookingType: 'public_payment_request',
+        createdAt: now, updatedAt: now, expiresAt: null, verificationStatus: 'pending'
+      });
+    });
+    return { bookingId: bookingRef.id, slotEnd: slot.end, slotPrice: price, advanceAmount: requiredAdvance, remainingAmount, transactionId, status: 'pending_payment_verification', paymentMethod, paymentAmount: requiredAdvance };
+  } catch (err) { throw callableError(err, 'Booking request failed. Please try again.'); }
+});
+
+exports.acceptBooking = functions.region('us-central1').https.onCall(async (data, context) => {
+  const actor = await requireAuth(context);
+  const profile = await getAdminProfile(context.auth.uid);
+  if (!hasPermission(profile, 'acceptBooking')) throw new functions.https.HttpsError('permission-denied', 'You do not have permission to accept booking requests.');
+  const bookingId = String(data?.bookingId || '').trim();
+  if (!bookingId) throw new functions.https.HttpsError('invalid-argument', 'Booking request is required.');
+  try {
+    const bookingRef = db.doc(`bookings/${bookingId}`);
+    let result = null;
+    await db.runTransaction(async tx => {
+      const snap = await tx.get(bookingRef);
+      if (!snap.exists) throw new functions.https.HttpsError('not-found', 'Booking request no longer exists.');
+      const b = snap.data() || {};
+      if (b.status !== 'pending_payment_verification') throw new functions.https.HttpsError('failed-precondition', `This request is already ${b.status || 'handled'}.`);
+      const slotKey = String(b.slotKey || '').trim();
+      const txnId = String(b.transactionId || '').trim();
+      if (!slotKey || !txnId) throw new functions.https.HttpsError('failed-precondition', 'The booking request is missing slot or transaction information.');
+      const lockRef = db.doc(`slotLocks/${slotKey}`);
+      const paymentRef = db.doc(`payments/txn_${encodeURIComponent(txnId).slice(0, 300)}`);
+      const transactionRef = db.doc(`transactions/txn_${encodeURIComponent(txnId).slice(0, 300)}`);
+      const lockSnap = await tx.get(lockRef);
+      if (!lockSnap.exists || lockSnap.data()?.status !== 'pending_payment_verification') throw new functions.https.HttpsError('failed-precondition', 'The slot lock is no longer active.');
+      const paymentSnap = await tx.get(paymentRef);
+      if (paymentSnap.exists) {
+        const existingBookingId = String(paymentSnap.data()?.bookingId || '');
+        if (existingBookingId !== bookingId) throw new functions.https.HttpsError('already-exists', 'Transaction ID already used by another confirmed payment.');
+        throw new functions.https.HttpsError('failed-precondition', 'This payment has already been recorded.');
+      }
+      const amount = parseMoney(b.paymentAmount || b.advanceAmount);
+      const total = parseMoney(b.totalAmount || b.slotPrice);
+      const required = parseMoney(b.advanceAmount);
+      if (amount <= 0 || amount < required || amount > total) throw new functions.https.HttpsError('failed-precondition', 'The submitted payment amount is not valid for this booking.');
+      const now = FieldValue.serverTimestamp();
+      tx.update(bookingRef, {
+        status: 'confirmed', paidAmount: amount, remainingAmount: total - amount, dueAmount: total - amount,
+        updatedAt: now, reviewedAt: now, verificationStatus: 'accepted', confirmedAt: now, expiresAt: null,
+        confirmedBy: context.auth.uid, confirmedByEmail: context.auth.token.email || '', confirmedByName: profile.name || profile.email || 'Administrator'
+      });
+      tx.set(lockRef, { ...lockSnap.data(), status: 'booked', expiresAt: null, updatedAt: now });
+      tx.set(paymentRef, { bookingId, amount, paymentMethod: String(b.paymentMethod || 'Other'), note: 'Public booking payment', transactionId: txnId, createdAt: now, createdBy: context.auth.uid, actor: { uid: context.auth.uid, email: context.auth.token.email || '', name: profile.name || profile.email || 'Administrator' } });
+      tx.set(transactionRef, { type: 'income', amount, category: 'Booking payment', referenceId: bookingId, description: `Payment for booking ${bookingId}`, transactionId: txnId, createdAt: now, createdBy: context.auth.uid, actorUid: context.auth.uid, actorEmail: context.auth.token.email || '', actorName: profile.name || profile.email || 'Administrator', paymentMethod: String(b.paymentMethod || 'Other') });
+      writeAdminAudit({ actor: { ...profile, uid: context.auth.uid }, target: { uid: bookingId }, action: 'booking_confirmed', description: `${profile.name || profile.email || 'Administrator'} accepted the booking request for ${b.customerName || 'Customer'}`, metadata: { customerName: b.customerName || '', sessionDate: b.sessionDate || b.date || '', slotStart: b.slotStart || '', slotEnd: b.slotEnd || '' }, tx });
+      result = { bookingId, amount };
+    });
+    return result;
+  } catch (err) { throw callableError(err, 'Could not confirm this booking request.'); }
+});
+
+exports.rejectBooking = functions.region('us-central1').https.onCall(async (data, context) => {
+  requireAuth(context);
+  const profile = await getAdminProfile(context.auth.uid);
+  if (!hasPermission(profile, 'rejectBooking')) throw new functions.https.HttpsError('permission-denied', 'You do not have permission to reject booking requests.');
+  const bookingId = String(data?.bookingId || '').trim();
+  const reason = String(data?.reason || '').trim();
+  if (!bookingId || !reason) throw new functions.https.HttpsError('invalid-argument', 'A rejection reason is required.');
+  try {
+    await db.runTransaction(async tx => {
+      const bookingRef = db.doc(`bookings/${bookingId}`);
+      const snap = await tx.get(bookingRef);
+      if (!snap.exists) throw new functions.https.HttpsError('not-found', 'Booking request no longer exists.');
+      const b = snap.data() || {};
+      if (b.status !== 'pending_payment_verification') throw new functions.https.HttpsError('failed-precondition', `This request is already ${b.status || 'handled'}.`);
+      const now = FieldValue.serverTimestamp();
+      tx.update(bookingRef, { status: 'rejected', verificationStatus: 'rejected', rejectionReason: reason, reviewedAt: now, updatedAt: now, rejectedBy: context.auth.uid, rejectedByEmail: context.auth.token.email || '', rejectedByName: profile.name || profile.email || 'Administrator' });
+      if (b.slotKey) tx.delete(db.doc(`slotLocks/${b.slotKey}`));
+      writeAdminAudit({ actor: { ...profile, uid: context.auth.uid }, target: { uid: bookingId }, action: 'booking_rejected', description: `${profile.name || profile.email || 'Administrator'} rejected the booking request for ${b.customerName || 'Customer'}`, metadata: { customerName: b.customerName || '', sessionDate: b.sessionDate || b.date || '', slotStart: b.slotStart || '', slotEnd: b.slotEnd || '', reason }, tx });
+    });
+    return { ok: true };
+  } catch (err) { throw callableError(err, 'Could not reject this booking request.'); }
+});
+
+exports.createManualBooking = functions.region('us-central1').https.onCall(async (data, context) => {
+  requireAuth(context);
+  const profile = await getAdminProfile(context.auth.uid);
+  if (!hasPermission(profile, 'manualBooking')) throw new functions.https.HttpsError('permission-denied', 'You do not have permission to create manual bookings.');
+  const customerName = String(data?.customerName || '').trim();
+  const phone = String(data?.phone || '').trim();
+  const adminNote = String(data?.adminNote || '').trim();
+  const advance = parseMoney(data?.advanceAmount);
+  if (customerName.length < 2) throw new functions.https.HttpsError('invalid-argument', 'Customer or booking name is required.');
+  if (adminNote.length < 2) throw new functions.https.HttpsError('invalid-argument', 'Admin note is required.');
+  if (advance < 0) throw new functions.https.HttpsError('invalid-argument', 'Advance payment must be a valid non-negative amount.');
+  try {
+    const [settingsSnap, pricingSnap] = await Promise.all([db.doc('settings/config').get(), db.doc('pricing/current').get()]);
+    const settings = settingsSnap.data() || {};
+    const pricing = pricingSnap.data() || {};
+    const slot = validateManualSlot(data?.slot, settings);
+    const price = getServerSlotPrice(slot, pricing, settings);
+    if (price <= 0) throw new functions.https.HttpsError('failed-precondition', 'Pricing is not configured for this slot.');
+    if (advance > price) throw new functions.https.HttpsError('invalid-argument', 'Advance cannot be greater than the total amount.');
+    const lockRef = db.doc(`slotLocks/${slot.key}`);
+    const bookingRef = db.collection('bookings').doc();
+    await db.runTransaction(async tx => {
+      const lockSnap = await tx.get(lockRef);
+      if (lockSnap.exists) {
+        const status = lockSnap.data()?.status;
+        if (status === 'booked') throw new functions.https.HttpsError('already-exists', 'That slot is already booked.');
+        if (status === 'pending_payment_verification') throw new functions.https.HttpsError('already-exists', 'That slot is currently reserved by a payment request.');
+      }
+      const now = FieldValue.serverTimestamp();
+      const fullNote = `${slot.date} · ${slot.start}–${slot.end} · ${adminNote}`;
+      const startDate = slot.date;
+      const endDate = minutes(slot.start) + slot.duration >= 1440
+        ? new Date(`${slot.date}T12:00:00Z`).toISOString().slice(0, 10) === slot.date
+          ? new Date(Date.parse(`${slot.date}T12:00:00Z`) + 86400000).toISOString().slice(0, 10)
+          : slot.date
+        : slot.date;
+      tx.set(lockRef, { status: 'booked', slotKey: slot.key, sessionDate: slot.date, slotStart: slot.start, slotEnd: slot.end, slotStartDate: startDate, slotEndDate: endDate, slotStartDateTime: `${startDate}T${slot.start}:00`, slotEndDateTime: `${endDate}T${slot.end}:00`, duration: slot.duration, shift: slot.shift, expiresAt: null, updatedAt: now });
+      tx.set(bookingRef, {
+        customerName, phone, date: slot.date, sessionDate: slot.date, slotStart: slot.start, slotEnd: slot.end,
+        duration: slot.duration, shift: slot.shift, slotPrice: price, totalAmount: price, paidAmount: advance,
+        advanceAmount: advance, remainingAmount: price - advance, dueAmount: price - advance, paymentMethod: 'Manual',
+        receiverNumberSnapshot: '', sendMoneyNumber: '', transactionId: '', paymentAmount: advance, status: 'confirmed',
+        slotKey: slot.key, createdBy: context.auth.uid, bookingType: 'manual_admin', bookingSource: 'admin', adminNote: fullNote,
+        createdAt: now, updatedAt: now, confirmedAt: now, createdByEmail: context.auth.token.email || '', createdByName: profile.name || profile.email || 'Administrator',
+        confirmedBy: context.auth.uid, confirmedByEmail: context.auth.token.email || '', confirmedByName: profile.name || profile.email || 'Administrator', expiresAt: null
+      });
+      if (advance > 0) {
+        const paymentRef = db.collection('payments').doc();
+        const transactionRef = db.collection('transactions').doc();
+        tx.set(paymentRef, { bookingId: bookingRef.id, amount: advance, paymentMethod: 'Manual', note: 'Manual booking advance payment', transactionId: '', createdAt: now, createdBy: context.auth.uid, recordedByUid: context.auth.uid, recordedByName: profile.name || profile.email || 'Administrator', recordedByEmail: context.auth.token.email || '' });
+        tx.set(transactionRef, { type: 'income', amount: advance, category: 'Booking payment', referenceId: bookingRef.id, description: `Advance payment for manual booking ${bookingRef.id}`, transactionId: '', createdAt: now, createdBy: context.auth.uid, recordedByUid: context.auth.uid, recordedByName: profile.name || profile.email || 'Administrator', recordedByEmail: context.auth.token.email || '', paymentMethod: 'Manual' });
+      }
+      writeAdminAudit({ actor: { ...profile, uid: context.auth.uid }, target: { uid: bookingRef.id }, action: 'manual_booking_created', description: `${profile.name || profile.email || 'Administrator'} created manual booking for ${customerName}`, metadata: { customerName, sessionDate: slot.date, slotStart: slot.start, slotEnd: slot.end, advance }, tx });
+    });
+    return { bookingId: bookingRef.id, slotKey: slot.key, totalAmount: price, paidAmount: advance, dueAmount: price - advance };
+  } catch (err) { throw callableError(err, 'Could not create the manual booking.'); }
+});
+
 exports.migrateLegacyAdminAccounts = functions.region('us-central1').https.onCall(async (data, context) => {
   await requireFullAdmin(context);
   const count = await migrateLegacyAdminAccounts();
@@ -131,39 +398,71 @@ exports.createAdminAccount = functions.region('us-central1').https.onCall(async 
     throw new functions.https.HttpsError('invalid-argument', 'Please provide a valid name, email and password.');
   }
 
-  let newUser;
+  let newUser = null;
+  let auditRef = null;
+  let profileCreated = false;
   try {
-    newUser = await auth.createUser({ email, password, displayName: name });
-  } catch (err) {
-    if (err?.code === 'auth/email-already-exists') throw new functions.https.HttpsError('already-exists', 'An account with this email already exists.');
-    functions.logger.error('createAdminAccount auth error', err);
-    throw new functions.https.HttpsError('internal', 'Could not create the Admin account.');
-  }
+    // Auth creation is necessarily outside Firestore transactions. If any later
+    // step fails, every created resource is rolled back before returning.
+    try {
+      newUser = await auth.createUser({ email, password, displayName: name });
+    } catch (err) {
+      if (err?.code === 'auth/email-already-exists') {
+        throw new functions.https.HttpsError('already-exists', 'An account with this email already exists.');
+      }
+      if (err?.code === 'auth/invalid-email') {
+        throw new functions.https.HttpsError('invalid-argument', 'Please enter a valid email address.');
+      }
+      if (err?.code === 'auth/password-does-not-meet-requirements') {
+        throw new functions.https.HttpsError('invalid-argument', 'The password does not meet Firebase password requirements.');
+      }
+      if (err?.code === 'auth/operation-not-allowed') {
+        throw new functions.https.HttpsError('failed-precondition', 'Email/password authentication is not enabled for this Firebase project.');
+      }
+      functions.logger.error('createAdminAccount auth.createUser failed', { code: err?.code, message: err?.message });
+      throw new functions.https.HttpsError('internal', 'Firebase could not create the Admin authentication account.');
+    }
 
-  try {
-    await db.runTransaction(async tx => {
-      const stateRef = db.doc('adminState/metadata');
-      const stateSnap = await tx.get(stateRef);
-      const adminsSnap = await tx.get(db.collection('users').where('role', '==', 'admin'));
-      const count = adminsSnap.size;
-      const now = FieldValue.serverTimestamp();
-      tx.set(stateRef, { adminCount: count + 1, updatedAt: now });
-      tx.set(db.doc(`users/${newUser.uid}`), {
-        uid: newUser.uid, name, email, role: 'admin', accessLevel, permissions,
-        createdAt: now, createdBy: context.auth.uid, createdByEmail: context.auth.token.email || '', updatedAt: now
-      });
-      writeAdminAudit({
-        actor: { ...actor, uid: context.auth.uid }, target: { uid: newUser.uid }, action: 'admin_created',
-        description: `${actor.name || context.auth.token.email || 'Administrator'} created ${accessLevel === 'full' ? 'Full Admin' : 'Custom Admin'} ${name || email}`,
-        metadata: { email, name, accessLevel, permissions }, tx
-      });
+    const userRef = db.doc(`users/${newUser.uid}`);
+    auditRef = db.collection('adminActivity').doc();
+    const batch = db.batch();
+    const now = FieldValue.serverTimestamp();
+    batch.set(userRef, {
+      uid: newUser.uid, name, email, role: 'admin', accessLevel, permissions,
+      createdAt: now, createdBy: context.auth.uid, createdByEmail: context.auth.token.email || '', updatedAt: now
     });
+    batch.set(auditRef, {
+      actorUid: context.auth.uid,
+      actorEmail: context.auth.token.email || '',
+      actorName: actor.name || context.auth.token.email || 'Administrator',
+      action: 'admin_created',
+      targetType: 'admin',
+      targetId: newUser.uid,
+      description: `${actor.name || context.auth.token.email || 'Administrator'} created ${accessLevel === 'full' ? 'Full Admin' : 'Custom Admin'} ${name || email}`,
+      metadata: { email, name, accessLevel, permissions },
+      createdAt: now
+    });
+    await batch.commit();
+    profileCreated = true;
+
+    // Reconcile from the source of truth instead of incrementing a possibly
+    // stale counter. This also makes concurrent creates converge correctly.
+    await ensureAdminState();
     return { uid: newUser.uid };
   } catch (err) {
-    try { await auth.deleteUser(newUser.uid); } catch (cleanupErr) { functions.logger.error('createAdminAccount cleanup error', cleanupErr); }
+    functions.logger.error('createAdminAccount failed', { code: err?.code, message: err?.message });
+    if (profileCreated && newUser) {
+      try { await db.doc(`users/${newUser.uid}`).delete(); } catch (cleanupErr) { functions.logger.error('createAdminAccount profile cleanup failed', cleanupErr); }
+      if (auditRef) {
+        try { await auditRef.delete(); } catch (cleanupErr) { functions.logger.error('createAdminAccount audit cleanup failed', cleanupErr); }
+      }
+      try { await ensureAdminState(); } catch (stateErr) { functions.logger.error('createAdminAccount state reconcile failed', stateErr); }
+    }
+    if (newUser) {
+      try { await auth.deleteUser(newUser.uid); } catch (cleanupErr) { functions.logger.error('createAdminAccount auth cleanup failed', cleanupErr); }
+    }
     if (err instanceof functions.https.HttpsError) throw err;
-    functions.logger.error('createAdminAccount Firestore error', err);
-    throw new functions.https.HttpsError('internal', 'Could not create the Admin account.');
+    throw new functions.https.HttpsError('internal', 'Could not create the Admin account. Please try again.');
   }
 });
 

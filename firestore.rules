@@ -35,14 +35,109 @@ service cloud.firestore {
     function authEmail() { return request.auth.token.email == null ? '' : request.auth.token.email; }
 
     match /users/{uid} {
+      // Any signed-in user can read their own profile.
       allow read: if signedIn() && request.auth.uid == uid;
+
+      // Full Admin can inspect Admin profiles.
       allow read: if isFullAdmin();
+
+      // Normal user account creation.
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.role == 'user';
-      allow update: if signedIn() && request.auth.uid == uid
-        && resource.data.role == 'user' && request.resource.data.role == 'user';
+
+      // Spark-compatible Admin account creation uses a one-time invitation.
+      // The Full Admin creates the invitation; the newly-created Auth user
+      // can atomically claim it while creating its Admin profile. This avoids
+      // any privileged Cloud Function requirement.
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'admin'
+        && request.resource.data.name is string
+        && request.resource.data.email is string
+        && request.resource.data.email == authEmail()
+        && request.resource.data.accessLevel in ['full', 'custom']
+        && request.resource.data.permissions is map
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && get(/databases/$(database)/documents/adminInvites/$(request.resource.data.email)).data.status == 'pending'
+        && get(/databases/$(database)/documents/adminInvites/$(request.resource.data.email)).data.email == authEmail();
+
+      // Normal user can update only their safe profile fields.
+      // Normal user can update only their safe profile fields.
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && resource.data.role == 'user'
+        && request.resource.data.role == 'user'
+        && request.resource.data.diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'email',
+            'phone',
+            'photoURL',
+            'updatedAt'
+          ]);
+
+      // Full Admin can manage another Admin's authority.
+      allow update: if isFullAdmin()
+        && resource.data.role == 'admin'
+        && request.resource.data.role in ['admin', 'user']
+        && request.resource.data.diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'email',
+            'accessLevel',
+            'permissions',
+            'updatedAt'
+          ])
+        && (
+          request.resource.data.role == 'user'
+          || (
+            request.resource.data.accessLevel in ['full', 'custom']
+            && request.resource.data.permissions is map
+          )
+        );
+
+      // Authentication deletion is not available on Spark from the browser.
+      // Admin removal is implemented as role revocation above.
       allow delete: if false;
+    }
+
+    match /adminInvites/{email} {
+      // Only Full Admin can create or inspect invitations.
+      allow read: if isFullAdmin();
+
+      allow create: if isFullAdmin()
+        && request.resource.data.email == email
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && request.resource.data.accessLevel in ['full', 'custom']
+        && request.resource.data.permissions is map
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdByEmail == authEmail()
+        && request.resource.data.createdAt is timestamp;
+
+      // The invited Auth user may claim only their own invitation.
+      allow update: if signedIn()
+        && resource.data.email == authEmail()
+        && resource.data.status == 'pending'
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.accessLevel == resource.data.accessLevel
+        && request.resource.data.permissions == resource.data.permissions
+        && request.resource.data.status == 'claimed'
+        && request.resource.data.claimedBy == request.auth.uid
+        && request.resource.data.claimedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'claimedBy',
+          'claimedAt'
+        ]);
+
+      allow delete: if isFullAdmin();
     }
 
     match /adminState/{id} {
@@ -86,10 +181,13 @@ service cloud.firestore {
     }
 
     match /slotLocks/{id} {
-      allow read: if hasPermission('viewSlots') || hasPermission('manualBooking')
-        || hasPermission('acceptBooking') || hasPermission('rejectBooking')
-        || hasPermission('cancelBooking') || hasPermission('viewHome');
+      // Public booking must be able to read operational slot locks so it can
+      // distinguish available, pending and booked slots. Lock documents contain
+      // only slot/session metadata; they do not contain customer/payment PII.
+      allow read: if true;
 
+      // Public slot locks are created atomically by createPublicBooking.
+      // Do not allow arbitrary clients to reserve slots directly.
       allow create: if request.resource.data.keys().hasOnly([
           'status','slotKey','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
           'slotStartDateTime','slotEndDateTime','duration','shift','expiresAt'
@@ -120,8 +218,28 @@ service cloud.firestore {
         && request.resource.data.expiresAt == null
         && request.resource.data.updatedAt is timestamp;
 
-      allow update: if hasPermission('manualBooking') || hasPermission('acceptBooking')
-        || hasPermission('rejectBooking') || hasPermission('cancelBooking');
+      allow update: if hasPermission('acceptBooking')
+        && resource.data.status == 'pending_payment_verification'
+        && request.resource.data.status == 'booked'
+        && request.resource.data.slotKey == resource.data.slotKey
+        && request.resource.data.sessionDate == resource.data.sessionDate
+        && request.resource.data.slotStart == resource.data.slotStart
+        && request.resource.data.slotEnd == resource.data.slotEnd
+        && request.resource.data.duration == resource.data.duration
+        && request.resource.data.shift == resource.data.shift
+        && request.resource.data.expiresAt == null
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','expiresAt','updatedAt'
+        ]);
+
+      allow update: if hasPermission('manualBooking')
+        && resource.data.status == 'booked'
+        && request.resource.data.status == 'booked'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp;
 
       allow delete: if (hasPermission('rejectBooking')
           && resource.data.status == 'pending_payment_verification')
@@ -133,6 +251,8 @@ service cloud.firestore {
         || hasPermission('viewHistory') || hasPermission('viewActivity') || hasPermission('manualBooking')
         || hasPermission('acceptBooking') || hasPermission('rejectBooking') || hasPermission('cancelBooking');
 
+      // Public booking documents are created atomically by createPublicBooking.
+      // Keep direct client creation disabled to prevent forged requests/locks.
       allow create: if request.resource.data.keys().hasOnly([
           'customerName','phone','date','sessionDate','slotStart','slotEnd','slotStartDate','slotEndDate',
           'slotStartDateTime','slotEndDateTime','duration','shift','slotPrice','totalAmount','paidAmount',
@@ -241,7 +361,7 @@ service cloud.firestore {
         && request.resource.data.remainingAmount == request.resource.data.totalAmount - request.resource.data.paidAmount
         && request.resource.data.dueAmount == request.resource.data.totalAmount - request.resource.data.paidAmount
         && request.resource.data.expiresAt == null
-        && getAfter(/databases/$(database)/documents/slotLocks/$(id)).data.status == 'booked';
+        && getAfter(/databases/$(database)/documents/slotLocks/$(request.resource.data.slotKey)).data.status == 'booked';
 
       allow update: if hasPermission('rejectBooking')
         && resource.data.status == 'pending_payment_verification'

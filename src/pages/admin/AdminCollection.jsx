@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, UserRound } from 'lucide-react';
 import { useCollection } from '../../hooks/useFirestore';
-import { bookingDate, dateShift, localDate, money, timeLabel, TZ } from '../../utils/dateUtils';
+import { bookingDate, dateShift, money, timeLabel, TZ } from '../../utils/dateUtils';
 import { zonedSlotStartMs } from '../../utils/slotStatus';
 import { recordPaymentClient } from '../../services/bookingService';
 import { useAdminRole } from '../../hooks/useAdminRole';
@@ -24,11 +24,7 @@ function getOperationalDate(nowMs) {
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
   }).formatToParts(new Date(nowMs));
   const current = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const date = `${current.year}-${current.month}-${current.day}`;
-  const minutes = Number(current.hour) * 60 + Number(current.minute);
-  if (minutes < 240) return dateShift(date, -1);
-  if (minutes < 360) return dateShift(date, 1);
-  return date;
+  return `${current.year}-${current.month}-${current.day}`;
 }
 
 function formatOperationalLabel(date) {
@@ -49,6 +45,7 @@ export default function AdminCollection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [search, setSearch] = useState('');
 
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -75,14 +72,30 @@ export default function AdminCollection() {
     .filter((entry) => entry.start >= startMs && entry.start < endMs)
     .sort((a, b) => a.start - b.start), [dueEntries, startMs, endMs]);
 
+  const mainEntries = useMemo(() => {
+    if (!todayEntries.length) return [];
+    const nextIndex = todayEntries.findIndex((entry) => entry.start > nowMs);
+    const centerIndex = nextIndex === -1 ? todayEntries.length - 1 : Math.max(0, nextIndex - 1);
+    return todayEntries.slice(Math.max(0, centerIndex - 1), centerIndex + 2);
+  }, [todayEntries, nowMs]);
+
   const archiveEntries = useMemo(() => dueEntries
-    .filter((entry) => !(entry.start >= startMs && entry.start < endMs))
+    .filter((entry) => !mainEntries.some((mainEntry) => mainEntry.booking.id === entry.booking.id))
     .sort((a, b) => {
       const aFuture = a.start >= endMs;
       const bFuture = b.start >= endMs;
       if (aFuture !== bFuture) return aFuture ? -1 : 1;
       return aFuture ? a.start - b.start : b.start - a.start;
-    }), [dueEntries, startMs, endMs]);
+    }), [dueEntries, mainEntries, endMs]);
+
+  const searchTerm = search.trim().toLowerCase();
+  const filterEntries = (source) => searchTerm
+    ? source.filter(({ booking }) => {
+      const name = String(booking.customerName || '').toLowerCase();
+      const slot = `${timeLabel(booking.slotStart)} ${timeLabel(booking.slotEnd)} ${booking.slotStart || ''} ${booking.slotEnd || ''}`.toLowerCase();
+      return name.includes(searchTerm) || slot.includes(searchTerm);
+    })
+    : source;
 
   const openPayment = (entry, fromView) => {
     if (!entry?.booking || entry.due <= 0) return;
@@ -186,7 +199,7 @@ export default function AdminCollection() {
     );
   }
 
-  const entries = view === 'archive' ? archiveEntries : todayEntries;
+  const entries = filterEntries(view === 'archive' ? archiveEntries : mainEntries);
   const isArchive = view === 'archive';
 
   return (
@@ -207,9 +220,18 @@ export default function AdminCollection() {
         </div>
       )}
 
+      <input
+        className="collection-input collection-search"
+        type="search"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="Search by customer name or slot time"
+        aria-label="Search by customer name or slot time"
+      />
+
       {success && <div className="success collection-success" role="status"><p>{success}</p></div>}
 
-      {!isArchive && <div className="collection-section-title">DUE TODAY · {todayEntries.length} BOOKINGS</div>}
+      {!isArchive && <div className="collection-section-title">DUE TODAY · {entries.length} BOOKINGS</div>}
       <div className="collection-queue">
         {entries.length ? entries.map((entry) => {
           const b = entry.booking;
